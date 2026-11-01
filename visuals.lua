@@ -1,9 +1,22 @@
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/refs/heads/main"
-local BUILD = "2"
+local BUILD = "3"
+local LIB_BYTES = 147735
+
+print("leet.cheats: visuals build " .. BUILD)
 
 getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf?v=" .. BUILD
 
-local leet = loadstring(game:HttpGet(REPO_RAW .. "/lib.lua?v=" .. BUILD))()
+local lib_src = game:HttpGet(REPO_RAW .. "/lib.lua?v=" .. BUILD)
+
+if #lib_src ~= LIB_BYTES then
+	print(string.format(
+		"leet.cheats: lib.lua отдаёт %d байт вместо %d — это старый образ с cdn, подожди пару минут",
+		#lib_src,
+		LIB_BYTES
+	))
+end
+
+local leet = loadstring(lib_src)()
 
 local window = leet:window({
 	name = "leet.cheats",
