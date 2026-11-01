@@ -995,10 +995,7 @@ do
 
 	local preview = esp:section({ name = "esp preview", side = "right" })
 
-	preview.holder.Parent.Parent.Parent.LayoutOrder = -1
-	preview.holder.Parent.Parent.Parent.ZIndex = 3
-
-	preview:toggle({
+	local preview_toggle = preview:toggle({
 		name = "preview",
 		flag = "preview_enabled",
 		default = true,
@@ -1053,20 +1050,6 @@ do
 		items = { "visible", "occluded" },
 		multi = false,
 		tooltip = "occluded ставит перед манекеном стену: видно, как esp и chams читаются сквозь укрытие.",
-	})
-
-	local probe = leet:new_item("TextLabel", {
-		Parent = preview.holder,
-		Name = "",
-		Size = UDim2.new(1, 0, 0, 14),
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		Text = "preview: build start",
-		TextColor3 = Color3.fromRGB(255, 210, 0),
-		TextSize = 12,
-		Font = Enum.Font.SourceSans,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		ZIndex = 9,
 	})
 
 	local CANVAS_W, CANVAS_H = 206, 250
@@ -1169,32 +1152,104 @@ do
 		})
 	end
 
-	local slot = leet:new_item("Frame", {
-		Parent = preview.holder,
+	local function try_set(node, property, value)
+		pcall(function()
+			node[property] = value
+		end)
+	end
+
+	local function try_new(class, properties)
+		local ok, node = pcall(leet.new_item, leet, class, properties)
+		return ok and node or nil
+	end
+
+	local PANEL_W = CANVAS_W + 20
+	local PANEL_H = CANVAS_H + 34
+
+	local panel = leet:new_item("Frame", {
+		Parent = leet.gui,
 		Name = "",
-		Size = UDim2.new(1, 0, 0, CANVAS_H + 8),
-		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 405, 0.5, -60),
+		Size = UDim2.fromOffset(PANEL_W, PANEL_H),
+		BackgroundColor3 = Color3.fromRGB(13, 13, 15),
 		BorderSizePixel = 0,
-		ZIndex = 2,
+		Active = true,
+		Draggable = true,
+		ZIndex = 20,
 	})
 
+	leet:new_item("UICorner", { Parent = panel, CornerRadius = UDim.new(0, 4) })
+	leet:new_item("UIStroke", {
+		Parent = panel,
+		Color = Color3.fromRGB(64, 66, 74),
+		Transparency = 0.2,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	})
+
+	local title = leet:new_item("Frame", {
+		Parent = panel,
+		Name = "",
+		Size = UDim2.new(1, 0, 0, 26),
+		BackgroundColor3 = Color3.fromRGB(22, 22, 26),
+		BorderSizePixel = 0,
+		ZIndex = 21,
+	})
+
+	leet:new_item("UICorner", { Parent = title, CornerRadius = UDim.new(0, 4) })
+
+	leet:new_item("TextLabel", {
+		Parent = title,
+		Name = "",
+		Position = UDim2.new(0, 9, 0, 0),
+		Size = UDim2.new(1, -44, 1, 0),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Text = "player view",
+		TextColor3 = Color3.fromRGB(196, 196, 202),
+		TextSize = 12,
+		Font = Enum.Font.SourceSans,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 22,
+	})
+
+	local close = leet:new_item("TextButton", {
+		Parent = title,
+		Name = "",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -8, 0.5, 0),
+		Size = UDim2.fromOffset(16, 16),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Text = "x",
+		TextColor3 = Color3.fromRGB(226, 96, 96),
+		TextSize = 14,
+		Font = Enum.Font.SourceSans,
+		AutoButtonColor = false,
+		ZIndex = 22,
+	})
+
+	close.MouseButton1Click:Connect(function()
+		preview_toggle.set(false)
+	end)
+
 	local viewport = leet:new_item("ViewportFrame", {
-		Parent = slot,
+		Parent = panel,
 		Name = "",
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 4),
+		Position = UDim2.new(0.5, 0, 0, 28),
 		Size = UDim2.fromOffset(CANVAS_W, CANVAS_H),
 		BackgroundColor3 = Color3.fromRGB(38, 40, 48),
 		BorderSizePixel = 0,
-		Ambient = Color3.fromRGB(98, 98, 110),
-		ColorShift_Top = Color3.fromRGB(140, 140, 150),
-		ColorShift_Bottom = Color3.fromRGB(0, 0, 0),
-		LightColor = Color3.fromRGB(255, 255, 255),
-		LightDirection = Vector3.new(0.4, -0.7, -0.6),
-		GlobalShadows = false,
-		Outline = Color3.fromRGB(0, 0, 0),
-		ZIndex = 2,
+		ZIndex = 20,
 	})
+
+	try_set(viewport, "Ambient", Color3.fromRGB(98, 98, 110))
+	try_set(viewport, "ColorShift_Top", Color3.fromRGB(140, 140, 150))
+	try_set(viewport, "ColorShift_Bottom", Color3.fromRGB(0, 0, 0))
+	try_set(viewport, "LightColor", Color3.fromRGB(255, 255, 255))
+	try_set(viewport, "LightDirection", Vector3.new(0.4, -0.7, -0.6))
+	try_set(viewport, "GlobalShadows", false)
 
 	leet:new_item("UICorner", { Parent = viewport, CornerRadius = UDim.new(0, 3) })
 	leet:new_item("UIStroke", {
@@ -1258,23 +1313,26 @@ do
 	local leg_r = rig_part(dummy, "Right Leg", Vector3.new(1, 2, 1), Vector3.new(0.5, 1, 0), PANTS)
 	dummy.PrimaryPart = torso
 
-	local cham = leet:new_item("Highlight", { Parent = dummy, Name = "" })
-	cham.Adornee = dummy
-	cham.Enabled = false
-	cham.FillTransparency = 0.4
-	cham.OutlineTransparency = 0
+	local cham = try_new("Highlight", { Parent = dummy, Name = "" })
+	if cham then
+		try_set(cham, "Adornee", dummy)
+		cham.Enabled = false
+		try_set(cham, "FillTransparency", 0.4)
+		try_set(cham, "OutlineTransparency", 0)
+	end
 
 	local overlay = leet:new_item("Frame", {
-		Parent = slot,
+		Parent = panel,
 		Name = "",
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 4),
+		Position = UDim2.new(0.5, 0, 0, 28),
 		Size = UDim2.fromOffset(CANVAS_W, CANVAS_H),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
-		ClipsVisible = true,
-		ZIndex = 3,
+		ZIndex = 21,
 	})
+
+	try_set(overlay, "ClipsVisible", true)
 
 	local fov_holder = new_frame(overlay, CANVAS_W, CANVAS_H, 3)
 	fov_holder.Visible = false
@@ -1466,33 +1524,8 @@ do
 	end
 
 	local clock = time()
-	local frames = 0
-	local probe_clock = time()
-	local probe_note = "idle"
 
-	leet:connection(run_service.RenderStepped, function()
-		frames = frames + 1
-
-		if time() - probe_clock > 0.5 then
-			probe_clock = time()
-			probe.Text = string.format("built ok, f%d %s", frames, probe_note)
-		end
-
-		if leet.dead or not leet.menu_visible then
-			return
-		end
-
-		local enabled = on("preview_enabled")
-		if once("viewport", enabled) then
-			viewport.Visible = enabled
-			overlay.Visible = enabled
-		end
-
-		if not enabled then
-			probe_note = "hidden by preview toggle"
-			return
-		end
-
+	local function render()
 		local elapsed = time() - clock
 		local prefix = on("preview_teammate") and on("team_esp") and "team" or "enemy"
 		local master = on(prefix .. "_esp")
@@ -1523,8 +1556,6 @@ do
 				end
 			end
 		end
-
-		probe_note = string.format("box %.0fx%.0f master=%s", x1 - x0, y1 - y0, tostring(master))
 
 		local cx = (x0 + x1) * 0.5
 		local box_h = math.max(1, y1 - y0)
@@ -1573,22 +1604,25 @@ do
 		place_line(snap, CROSS_X, CROSS_Y, cx, y0 + box_h * 0.5, 1)
 		place_line(oov, head_sp.X, head_sp.Y, 14, head_sp.Y, 2)
 
-		local chams = master and on(prefix .. "_chams")
-		if once("v:chams", chams) then
-			cham.Enabled = chams
-		end
+		local chams = cham ~= nil and master and on(prefix .. "_chams")
 
-		if chams then
-			local inner, inner_alpha = color_of(prefix .. "_innerchamcolor", Color3.fromRGB(100, 0, 0))
-			local outer, _ = color_of(prefix .. "_outerchamcolor", Color3.new(1, 0, 0))
-
-			if once("pc:innerchamcolor", inner) or once("pa:innerchamcolor", inner_alpha) then
-				cham.FillColor = inner
-				cham.FillTransparency = 1 - inner_alpha
+		if cham then
+			if once("v:chams", chams) then
+				cham.Enabled = chams
 			end
 
-			if once("pc:outerchamcolor", outer) then
-				cham.OutlineColor = outer
+			if chams then
+				local inner, inner_alpha = color_of(prefix .. "_innerchamcolor", Color3.fromRGB(100, 0, 0))
+				local outer, _ = color_of(prefix .. "_outerchamcolor", Color3.new(1, 0, 0))
+
+				if once("pc:innerchamcolor", inner) or once("pa:innerchamcolor", inner_alpha) then
+					cham.FillColor = inner
+					cham.FillTransparency = 1 - inner_alpha
+				end
+
+				if once("pc:outerchamcolor", outer) then
+					cham.OutlineColor = outer
+				end
 			end
 		end
 
@@ -1720,9 +1754,34 @@ do
 				fov_center.BackgroundColor3 = center_dot
 			end
 		end
+	end
+
+	local broken = false
+
+	leet:connection(run_service.RenderStepped, function()
+		if leet.dead or broken then
+			return
+		end
+
+		local enabled = leet.menu_visible and on("preview_enabled")
+		if once("panel", enabled) then
+			panel.Visible = enabled
+		end
+
+		if not enabled then
+			return
+		end
+
+		local ok, err = pcall(render)
+
+		if not ok then
+			broken = true
+			panel.Visible = false
+			print("leet.cheats: preview disabled, " .. tostring(err))
+		end
 	end)
 
-	probe.Text = "built ok, no frames yet"
+	print("leet.cheats: player view panel built")
 end
 
 if not leet:load_last_config() then
