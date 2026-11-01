@@ -1,8 +1,9 @@
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/refs/heads/main"
+local BUILD = "2"
 
-getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
+getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf?v=" .. BUILD
 
-local leet = loadstring(game:HttpGet(REPO_RAW .. "/lib.lua"))()
+local leet = loadstring(game:HttpGet(REPO_RAW .. "/lib.lua?v=" .. BUILD))()
 
 local window = leet:window({
 	name = "leet.cheats",
