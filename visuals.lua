@@ -1,6 +1,6 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "6"
+local BUILD = "7"
 local LIB_BYTES = 147735
 
 print("leet.cheats: visuals build " .. BUILD)
@@ -1393,13 +1393,9 @@ do
 		local tall = math.max(4, size.Y)
 		local dist = (tall * 0.62) / math.tan(math.rad(camera.FieldOfView * 0.5))
 
-		camera.CFrame = CFrame.new(
-			center.X,
-			center.Y,
-			center.Z - dist,
-			center.X,
-			center.Y,
-			center.Z
+		camera.CFrame = CFrame.lookAt(
+			Vector3.new(center.X, center.Y, center.Z - dist),
+			center
 		)
 	end
 
@@ -1489,21 +1485,35 @@ do
 		use_target(dummy)
 	end
 
+	local function try_adopt(char)
+		local ok, adopted = pcall(adopt, char)
+
+		if ok and adopted then
+			return true
+		end
+
+		if not ok and once("adopt_err", tostring(adopted)) then
+			print("leet.cheats: preview fell back to the mannequin, " .. tostring(adopted))
+		end
+
+		pcall(release)
+		return false
+	end
+
 	local function watch_character()
 		local player = players.LocalPlayer
 
 		if not player then
+			release()
 			return
 		end
 
-		if adopt(player.Character) then
+		if try_adopt(player.Character) then
 			return
 		end
-
-		release()
 
 		leet:connection(player.CharacterAdded, function(char)
-			task.delay(0.5, adopt, char)
+			task.delay(0.5, try_adopt, char)
 		end)
 	end
 
@@ -1742,7 +1752,7 @@ do
 			local player = players.LocalPlayer
 
 			if player then
-				adopt(player.Character)
+				try_adopt(player.Character)
 			end
 		end
 
