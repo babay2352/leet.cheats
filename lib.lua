@@ -559,8 +559,20 @@ function leet:bind_tooltip(object, text)
 		return
 	end
 
-	leet:connection(object.MouseMoved, function(input)
-		leet:show_tooltip(text, input.Position.X, input.Position.Y)
+	leet:connection(object.MouseMoved, function(a, b)
+		local x, y
+
+		if typeof(a) == "Vector2" then
+			x, y = a.X, a.Y
+		elseif type(a) == "number" then
+			x, y = a, b
+		elseif typeof(a) == "InputObject" then
+			x, y = a.Position.X, a.Position.Y
+		else
+			return
+		end
+
+		leet:show_tooltip(text, x, y)
 	end)
 
 	leet:connection(object.MouseLeave, function()
@@ -647,7 +659,7 @@ function leet:enable_autosave(delay)
 	local wait_time = delay or 1
 
 	task.spawn(function()
-		while not leet.dead do
+		while leet and not leet.dead do
 			if dirty then
 				dirty = false
 				leet:save_last_config()
@@ -817,7 +829,7 @@ function leet:window(properties)
 	leet:apply_theme(glow, "accent", "ImageColor3")
 
 	task.spawn(function()
-		while not leet.dead do
+		while leet and not leet.dead do
 			if __holder.Visible then
 				for i = 1, #animated_text do
 					task.wait(0.2)
@@ -1019,7 +1031,7 @@ function leet:window(properties)
 	})
 
 	task.spawn(function()
-		while not leet.dead do
+		while leet and not leet.dead do
 			if flags["color_picker_anim_speed"] then
 				leet.sin = math.abs(math.sin(tick() * flags["color_picker_anim_speed"]))
 
@@ -4965,7 +4977,7 @@ function leet:colorpicker(properties)
 	leet.config_flags[cfg.flag] = cfg.set
 
 	task.spawn(function()
-		while not leet.dead do
+		while leet and not leet.dead do
 			if selected ~= "normal" then
 				cfg.set(
 					hsv(
