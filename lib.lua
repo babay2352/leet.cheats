@@ -3678,6 +3678,10 @@ function leet:toggle(properties)
 	self.bottom_holder = bottom_components
 	self.right_holder = right_components
 
+	cfg.holder = self.holder
+	cfg.right_holder = right_components
+	cfg.bottom_holder = bottom_components
+
 	config_flags[cfg.flag] = cfg.set
 
 	leet:bind_tooltip(object, properties.tooltip)
