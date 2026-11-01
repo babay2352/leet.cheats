@@ -1,6 +1,6 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "5"
+local BUILD = "6"
 local LIB_BYTES = 147735
 
 print("leet.cheats: visuals build " .. BUILD)
@@ -1014,7 +1014,7 @@ do
 		name = "preview",
 		flag = "preview_enabled",
 		default = true,
-		tooltip = "Рендерит 3D-манекен во вьюпорте прямо в меню со всеми включёнными esp-флагами.",
+		tooltip = "Открывает отдельную панель player view: твой реальный персонаж со всеми включёнными esp-флагами.",
 	})
 
 	preview:toggle({
@@ -1028,7 +1028,7 @@ do
 		name = "animate",
 		flag = "preview_animate",
 		default = true,
-		tooltip = "Крутит манекен и качает хп, дистанцию и пакетные тайминги вокруг значений со слайдеров.",
+		tooltip = "Крутит персонажа на месте и качает хп, дистанцию и пакетные тайминги вокруг значений со слайдеров.",
 	})
 
 	preview:slider({
@@ -1056,7 +1056,7 @@ do
 		flag = "preview_stance",
 		items = { "stand", "crouch", "prone" },
 		multi = false,
-		tooltip = "Текст стэнка в превью. Позу манекена не меняет.",
+		tooltip = "Текст стэнка в превью. Позу персонажа не меняет.",
 	})
 
 	preview:dropdown({
@@ -1178,8 +1178,8 @@ do
 		return ok and node or nil
 	end
 
-	local PANEL_W = CANVAS_W + 20
-	local PANEL_H = CANVAS_H + 34
+	local PANEL_W = CANVAS_W + 24
+	local PANEL_H = CANVAS_H + 46
 
 	local panel = leet:new_item("Frame", {
 		Parent = leet.gui,
@@ -1187,59 +1187,65 @@ do
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.new(0.5, 405, 0.5, -60),
 		Size = UDim2.fromOffset(PANEL_W, PANEL_H),
-		BackgroundColor3 = Color3.fromRGB(13, 13, 15),
+		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		Active = true,
 		Draggable = true,
 		ZIndex = 20,
 	})
 
-	leet:new_item("UICorner", { Parent = panel, CornerRadius = UDim.new(0, 4) })
-	leet:new_item("UIStroke", {
-		Parent = panel,
-		Color = Color3.fromRGB(64, 66, 74),
-		Transparency = 0.2,
-		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-	})
-
-	local title = leet:new_item("Frame", {
+	leet:new_item("Frame", {
 		Parent = panel,
 		Name = "",
-		Size = UDim2.new(1, 0, 0, 26),
-		BackgroundColor3 = Color3.fromRGB(22, 22, 26),
+		Position = UDim2.new(0, 0, 0, 4),
+		Size = UDim2.new(1, 0, 1, -4),
+		BorderColor3 = Color3.fromRGB(19, 19, 19),
 		BorderSizePixel = 0,
-		ZIndex = 21,
+		BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+		ZIndex = 20,
 	})
 
-	leet:new_item("UICorner", { Parent = title, CornerRadius = UDim.new(0, 4) })
-
-	leet:new_item("TextLabel", {
-		Parent = title,
+	local body = leet:new_item("Frame", {
+		Parent = panel,
 		Name = "",
-		Position = UDim2.new(0, 9, 0, 0),
-		Size = UDim2.new(1, -44, 1, 0),
+		Position = UDim2.new(0, 2, 0, 6),
+		Size = UDim2.new(1, -4, 1, -8),
+		BorderColor3 = Color3.fromRGB(56, 56, 56),
+		BackgroundColor3 = Color3.fromRGB(22, 22, 22),
+		ZIndex = 20,
+	})
+
+	local title = leet:new_item("TextLabel", {
+		Parent = body,
+		Name = "",
+		Position = UDim2.new(0, 8, 0, 4),
+		Size = UDim2.new(1, -40, 0, 14),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		Text = "player view",
-		TextColor3 = Color3.fromRGB(196, 196, 202),
+		FontFace = leet.font,
+		TextColor3 = Color3.fromRGB(170, 170, 170),
 		TextSize = 12,
-		Font = Enum.Font.SourceSans,
+		TextStrokeTransparency = 0.5,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		ZIndex = 22,
 	})
 
+	leet:apply_theme(title, "text", "TextColor3")
+
 	local close = leet:new_item("TextButton", {
-		Parent = title,
+		Parent = body,
 		Name = "",
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -8, 0.5, 0),
-		Size = UDim2.fromOffset(16, 16),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -8, 0, 4),
+		Size = UDim2.fromOffset(14, 14),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		Text = "x",
-		TextColor3 = Color3.fromRGB(226, 96, 96),
-		TextSize = 14,
-		Font = Enum.Font.SourceSans,
+		FontFace = leet.font,
+		TextColor3 = Color3.fromRGB(170, 170, 170),
+		TextSize = 12,
+		TextStrokeTransparency = 0.5,
 		AutoButtonColor = false,
 		ZIndex = 22,
 	})
@@ -1248,16 +1254,27 @@ do
 		preview_toggle.set(false)
 	end)
 
+	leet:connection(close.MouseEnter, function()
+		close.TextColor3 = Color3.fromRGB(100, 100, 255)
+	end)
+
+	leet:connection(close.MouseLeave, function()
+		close.TextColor3 = Color3.fromRGB(170, 170, 170)
+	end)
+
 	local viewport = leet:new_item("ViewportFrame", {
-		Parent = panel,
+		Parent = body,
 		Name = "",
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 28),
+		Position = UDim2.new(0.5, 0, 0, 22),
 		Size = UDim2.fromOffset(CANVAS_W, CANVAS_H),
-		BackgroundColor3 = Color3.fromRGB(38, 40, 48),
-		BorderSizePixel = 0,
-		ZIndex = 20,
+		BackgroundColor3 = Color3.fromRGB(32, 32, 38),
+		BorderSizePixel = 1,
+		BorderColor3 = Color3.fromRGB(56, 56, 56),
+		ZIndex = 21,
 	})
+
+	leet:apply_theme(viewport, "outline", "BackgroundColor3")
 
 	try_set(viewport, "Ambient", Color3.fromRGB(98, 98, 110))
 	try_set(viewport, "ColorShift_Top", Color3.fromRGB(140, 140, 150))
@@ -1266,18 +1283,22 @@ do
 	try_set(viewport, "LightDirection", Vector3.new(0.4, -0.7, -0.6))
 	try_set(viewport, "GlobalShadows", false)
 
-	leet:new_item("UICorner", { Parent = viewport, CornerRadius = UDim.new(0, 3) })
-	leet:new_item("UIStroke", {
-		Parent = viewport,
-		Color = Color3.fromRGB(120, 124, 134),
-		Transparency = 0.15,
-		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-	})
-
 	local camera = leet:new_item("Camera", { Parent = viewport, Name = "" })
 	camera.FieldOfView = 52
 	camera.CFrame = CFrame.new(Vector3.new(0, 3.1, -9.4), Vector3.new(0, 2.95, 0))
 	viewport.CurrentCamera = camera
+
+	local function project(world)
+		local rel = camera.CFrame:PointToObjectSpace(world)
+
+		if rel.Z > -0.1 then
+			return Vector3.new(-9999, -9999, 0)
+		end
+
+		local scale = (CANVAS_H * 0.5) / math.tan(math.rad(camera.FieldOfView * 0.5))
+
+		return Vector3.new(CROSS_X + rel.X * scale / -rel.Z, CROSS_Y - rel.Y * scale / -rel.Z, -rel.Z)
+	end
 
 	local scenery = leet:new_item("Model", { Parent = viewport, Name = "leet_preview_scenery" })
 	local dummy = leet:new_item("Model", { Parent = viewport, Name = "leet_preview_dummy" })
@@ -1322,13 +1343,13 @@ do
 	})
 
 	local torso = rig_part(dummy, "Torso", Vector3.new(2, 2, 1), Vector3.new(0, 3, 0), SHIRT)
-	local arm_l = rig_part(dummy, "Left Arm", Vector3.new(1, 2, 1), Vector3.new(-1.5, 3, 0), SKIN)
-	local arm_r = rig_part(dummy, "Right Arm", Vector3.new(1, 2, 1), Vector3.new(1.5, 3, 0), SKIN)
-	local leg_l = rig_part(dummy, "Left Leg", Vector3.new(1, 2, 1), Vector3.new(-0.5, 1, 0), PANTS)
-	local leg_r = rig_part(dummy, "Right Leg", Vector3.new(1, 2, 1), Vector3.new(0.5, 1, 0), PANTS)
+	rig_part(dummy, "Left Arm", Vector3.new(1, 2, 1), Vector3.new(-1.5, 3, 0), SKIN)
+	rig_part(dummy, "Right Arm", Vector3.new(1, 2, 1), Vector3.new(1.5, 3, 0), SKIN)
+	rig_part(dummy, "Left Leg", Vector3.new(1, 2, 1), Vector3.new(-0.5, 1, 0), PANTS)
+	rig_part(dummy, "Right Leg", Vector3.new(1, 2, 1), Vector3.new(0.5, 1, 0), PANTS)
 	dummy.PrimaryPart = torso
 
-	local cham = try_new("Highlight", { Parent = dummy, Name = "" })
+	local cham = try_new("Highlight", { Parent = viewport, Name = "" })
 	if cham then
 		try_set(cham, "Adornee", dummy)
 		cham.Enabled = false
@@ -1336,18 +1357,171 @@ do
 		try_set(cham, "OutlineTransparency", 0)
 	end
 
+	local players = game:GetService("Players")
+	local avatar = leet:new_item("Model", { Parent = viewport, Name = "leet_preview_avatar" })
+	local part_map = {}
+	local limbs = {}
+	local shown = dummy
+	local shown_label = "dummy"
+	local live_root = nil
+	local next_try = 0
+
+	local function find_part(model, ...)
+		for _, name in next, { ... } do
+			local found = model:FindFirstChild(name)
+
+			if found and found:IsA("BasePart") then
+				return found
+			end
+		end
+	end
+
+	local function limbs_of(model)
+		return {
+			head = find_part(model, "Head"),
+			torso = find_part(model, "Torso", "UpperTorso", "HumanoidRootPart"),
+			root = find_part(model, "HumanoidRootPart", "Torso"),
+			arm_l = find_part(model, "Left Arm", "LeftUpperArm"),
+			arm_r = find_part(model, "Right Arm", "RightUpperArm"),
+			leg_l = find_part(model, "Left Leg", "LeftLowerLeg", "LeftUpperLeg"),
+			leg_r = find_part(model, "Right Leg", "RightLowerLeg", "RightUpperLeg"),
+		}
+	end
+
+	local function fit_camera(model)
+		local center, size = model:GetBoundingBox()
+		local tall = math.max(4, size.Y)
+		local dist = (tall * 0.62) / math.tan(math.rad(camera.FieldOfView * 0.5))
+
+		camera.CFrame = CFrame.new(
+			center.X,
+			center.Y,
+			center.Z - dist,
+			center.X,
+			center.Y,
+			center.Z
+		)
+	end
+
+	local function clear_avatar()
+		for _, child in next, avatar:GetChildren() do
+			child:Destroy()
+		end
+
+		table.clear(part_map)
+	end
+
+	local function use_target(model)
+		limbs = limbs_of(model)
+
+		if model == dummy then
+			shown = dummy
+			dummy.Parent = viewport
+			avatar.Parent = viewport
+		else
+			shown = model
+			dummy.Parent = nil
+		end
+
+		if cham then
+			try_set(cham, "Adornee", model)
+		end
+
+		fit_camera(shown)
+	end
+
+	local function adopt(char)
+		if typeof(char) ~= "Instance" or not char:IsA("Model") or not char.Parent then
+			return false
+		end
+
+		local root = find_part(char, "HumanoidRootPart", "Torso")
+
+		if not root or not find_part(char, "Head") then
+			return false
+		end
+
+		local clone = char:Clone()
+
+		if not clone then
+			return false
+		end
+
+		clear_avatar()
+
+		for _, item in next, clone:GetDescendants() do
+			if item:IsA("LuaSourceContainer") or item:IsA("Sound") then
+				item:Destroy()
+			elseif item:IsA("BasePart") then
+				pcall(function()
+					item.Anchored = true
+					item.CanCollide = false
+					item.CastShadow = false
+				end)
+			end
+		end
+
+		clone.Name = "leet_preview_char"
+		clone.Parent = avatar
+
+		for _, live in next, char:GetDescendants() do
+			if live:IsA("BasePart") then
+				local twin = clone:FindFirstChild(live.Name, true)
+
+				if twin and twin:IsA("BasePart") then
+					part_map[twin] = live
+				end
+			end
+		end
+
+		live_root = root
+		shown_label = players.LocalPlayer and players.LocalPlayer.Name or "dummy"
+
+		use_target(clone)
+
+		return true
+	end
+
+	local function release()
+		clear_avatar()
+		live_root = nil
+		shown_label = "dummy"
+		use_target(dummy)
+	end
+
+	local function watch_character()
+		local player = players.LocalPlayer
+
+		if not player then
+			return
+		end
+
+		if adopt(player.Character) then
+			return
+		end
+
+		release()
+
+		leet:connection(player.CharacterAdded, function(char)
+			task.delay(0.5, adopt, char)
+		end)
+	end
+
+	limbs = limbs_of(dummy)
+	watch_character()
+
 	local overlay = leet:new_item("Frame", {
-		Parent = panel,
+		Parent = body,
 		Name = "",
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 28),
+		Position = UDim2.new(0.5, 0, 0, 22),
 		Size = UDim2.fromOffset(CANVAS_W, CANVAS_H),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
-		ZIndex = 21,
+		ZIndex = 22,
 	})
 
-	try_set(overlay, "ClipsVisible", true)
+	try_set(overlay, "ClipsDescendants", true)
 
 	local fov_holder = new_frame(overlay, CANVAS_W, CANVAS_H, 3)
 	fov_holder.Visible = false
@@ -1475,14 +1649,6 @@ do
 		end
 	end
 
-	local joints = {
-		head = head,
-		arm_l = arm_l,
-		arm_r = arm_r,
-		leg_l = leg_l,
-		leg_r = leg_r,
-	}
-
 	local links = {
 		{ "head", "neck" },
 		{ "neck", "arm_l" },
@@ -1492,14 +1658,36 @@ do
 		{ "hips", "leg_r" },
 	}
 
-	local function joint(name_key)
-		if name_key == "neck" then
-			return torso.CFrame:PointToWorldSpace(Vector3.new(0, 1, 0))
-		elseif name_key == "hips" then
-			return torso.CFrame:PointToWorldSpace(Vector3.new(0, -1, 0))
+	local function joint(key)
+		if key == "neck" then
+			local ref = limbs.torso or limbs.root or limbs.head
+			return ref and ref.CFrame:PointToWorldSpace(Vector3.new(0, 1, 0))
+		elseif key == "hips" then
+			local ref = limbs.torso or limbs.root or limbs.head
+			return ref and ref.CFrame:PointToWorldSpace(Vector3.new(0, -1, 0))
 		end
 
-		return joints[name_key].Position
+		local part = limbs[key]
+		return part and part.Position
+	end
+
+	local function sync_pose(origin)
+		if not live_root or live_root.Parent == nil then
+			if live_root then
+				release()
+			end
+
+			dummy:PivotTo(origin)
+			return
+		end
+
+		local base = origin * live_root.CFrame:Inverse()
+
+		for twin, live in next, part_map do
+			if live.Parent ~= nil then
+				twin.CFrame = base * live.CFrame
+			end
+		end
 	end
 
 	local function paint(row, color)
@@ -1547,14 +1735,23 @@ do
 		local animated = on("preview_animate")
 
 		local yaw = animated and math.rad(38 * math.sin(elapsed * 0.45)) or math.rad(18)
-		dummy:PivotTo(PIVOT * CFrame.Angles(0, yaw, 0))
+		sync_pose(PIVOT * CFrame.Angles(0, yaw, 0))
+
+		if shown == dummy and elapsed > next_try then
+			next_try = elapsed + 2
+			local player = players.LocalPlayer
+
+			if player then
+				adopt(player.Character)
+			end
+		end
 
 		local occluded = flags.preview_visible == "occluded"
 		if once("wall", occluded) then
 			wall.Transparency = occluded and 0.4 or 1
 		end
 
-		local center, size = dummy:GetBoundingBox()
+		local center, size = shown:GetBoundingBox()
 		local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
 		local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
 
@@ -1562,7 +1759,7 @@ do
 			for sy = -1, 1, 2 do
 				for sz = -1, 1, 2 do
 					local world = center:PointToWorldSpace(Vector3.new(sx * hx, sy * hy, sz * hz))
-					local sp = camera:WorldToViewportPoint(world)
+					local sp = project(world)
 
 					x0 = math.min(x0, sp.X)
 					y0 = math.min(y0, sp.Y)
@@ -1605,19 +1802,31 @@ do
 		filled.Size = box.Size
 
 		for index, link in next, links do
-			local a = camera:WorldToViewportPoint(joint(link[1]))
-			local b = camera:WorldToViewportPoint(joint(link[2]))
-			place_line(skel_lines[index], a.X, a.Y, b.X, b.Y, 1)
+			local a, b = joint(link[1]), joint(link[2])
+			local line = skel_lines[index]
+
+			if a and b then
+				local pa, pb = project(a), project(b)
+				line.Visible = true
+				place_line(line, pa.X, pa.Y, pb.X, pb.Y, 1)
+			else
+				line.Visible = false
+			end
 		end
 
-		local head_sp = camera:WorldToViewportPoint(head.Position)
-		local look_sp = camera:WorldToViewportPoint(head.CFrame:PointToWorldSpace(Vector3.new(0, 0, 3)))
+		local head_part = limbs.head
+		if head_part then
+			local head_sp = project(head_part.Position)
+			local look_sp = project(head_part.CFrame:PointToWorldSpace(Vector3.new(0, 0, 3)))
 
-		head_dot.Position = UDim2.fromOffset(head_sp.X - 2, head_sp.Y - 2)
+			head_dot.Visible = true
+			head_dot.Position = UDim2.fromOffset(head_sp.X - 2, head_sp.Y - 2)
+			place_line(view_angle, head_sp.X, head_sp.Y, look_sp.X, look_sp.Y, 1)
+			place_line(oov, head_sp.X, head_sp.Y, 14, head_sp.Y, 2)
+		end
+
 		resolved.Position = UDim2.fromOffset(x1 + 3, y0 + 2)
-		place_line(view_angle, head_sp.X, head_sp.Y, look_sp.X, look_sp.Y, 1)
 		place_line(snap, CROSS_X, CROSS_Y, cx, y0 + box_h * 0.5, 1)
-		place_line(oov, head_sp.X, head_sp.Y, 14, head_sp.Y, 2)
 
 		local chams = cham ~= nil and master and on(prefix .. "_chams")
 
@@ -1686,7 +1895,7 @@ do
 		local center_dist = tonumber(flags.preview_distance) or 48
 		local dist = animated and math.max(1, center_dist + 18 * math.sin(elapsed * 0.3)) or center_dist
 
-		apply_text(name, "name", main_font, main_size, main_case, "dummy")
+		apply_text(name, "name", main_font, main_size, main_case, shown_label)
 		apply_text(rank, "rank", main_font, main_size, main_case, "rank 42")
 		apply_text(distance, "distance", main_font, main_size, main_case, string.format("%.0fm", dist))
 		apply_text(weapon, "weapon", main_font, main_size, main_case, "rifle")
@@ -1771,10 +1980,10 @@ do
 		end
 	end
 
-	local broken = false
+	local fails = 0
 
 	leet:connection(run_service.RenderStepped, function()
-		if leet.dead or broken then
+		if leet.dead or fails > 20 then
 			return
 		end
 
@@ -1789,11 +1998,24 @@ do
 
 		local ok, err = pcall(render)
 
-		if not ok then
-			broken = true
-			panel.Visible = false
-			print("leet.cheats: preview disabled, " .. tostring(err))
+		if ok then
+			fails = 0
+			return
 		end
+
+		fails = fails + 1
+
+		if fails == 1 then
+			print("leet.cheats: preview error, " .. tostring(err))
+		end
+
+		if fails > 20 then
+			panel.Visible = false
+			print("leet.cheats: preview disabled")
+			return
+		end
+
+		pcall(release)
 	end)
 
 	print("leet.cheats: player view panel built")
