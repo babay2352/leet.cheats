@@ -1,6 +1,6 @@
-local COMMIT = "75afdc160d241c95dc57fd305a4e36ce2c75cb15"
+local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "4"
+local BUILD = "5"
 local LIB_BYTES = 147735
 
 print("leet.cheats: visuals build " .. BUILD)
@@ -1307,7 +1307,7 @@ do
 		Color3.fromRGB(74, 74, 80),
 		Enum.Material.Concrete
 	)
-	wall.Visible = false
+	wall.Transparency = 1
 
 	local SKIN = Color3.fromRGB(245, 228, 96)
 	local SHIRT = Color3.fromRGB(58, 96, 168)
@@ -1551,7 +1551,7 @@ do
 
 		local occluded = flags.preview_visible == "occluded"
 		if once("wall", occluded) then
-			wall.Visible = occluded
+			wall.Transparency = occluded and 0.4 or 1
 		end
 
 		local center, size = dummy:GetBoundingBox()
