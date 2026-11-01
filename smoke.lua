@@ -1,4 +1,4 @@
-local REPO_RAW = "https://raw.githubusercontent.com/OWNER/leet-cheats/main"
+local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/refs/heads/main"
 
 getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
 
