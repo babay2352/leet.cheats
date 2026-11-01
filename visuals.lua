@@ -1,12 +1,13 @@
-local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/refs/heads/main"
-local BUILD = "3"
+local COMMIT = "75afdc160d241c95dc57fd305a4e36ce2c75cb15"
+local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
+local BUILD = "4"
 local LIB_BYTES = 147735
 
 print("leet.cheats: visuals build " .. BUILD)
 
-getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf?v=" .. BUILD
+getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
 
-local lib_src = game:HttpGet(REPO_RAW .. "/lib.lua?v=" .. BUILD)
+local lib_src = game:HttpGet(REPO_RAW .. "/lib.lua")
 
 if #lib_src ~= LIB_BYTES then
 	print(string.format(
