@@ -980,7 +980,7 @@ do
 	end
 end
 
-local Scene = { list = {}, built = 0, seen = {} }
+local Scene = { list = {}, built = 0, seen = {}, painted = 0 }
 
 local CATS = {
 	{
@@ -3935,7 +3935,7 @@ do
 			Watermark.clock = now
 		end
 
-		local text = string.format("leet.cheats | AR2  %d fps  %d", Watermark.fps, #Scene.list)
+		local text = string.format("leet.cheats | AR2  %d fps  %d ent  %d drawn", Watermark.fps, #Scene.list, Scene.painted)
 
 		if Util.on("ui_hints") then
 			local hints = {}
@@ -4021,6 +4021,7 @@ function Frame.draw(camera)
 	local center = viewport * 0.5
 	local keep = {}
 	local per_kind = {}
+	local painted = 0
 	local origin = camera.CFrame.Position
 
 	for _, ent in next, Scene.list do
@@ -4043,6 +4044,7 @@ function Frame.draw(camera)
 
 		if allowed then
 			keep[ent.key] = true
+			painted = painted + 1
 
 			local ok, err = xpcall(Visual.draw, debug.traceback, ent, camera, center, viewport)
 
@@ -4060,6 +4062,7 @@ function Frame.draw(camera)
 
 	Visual.gc(keep)
 	Visual.draw_crosshair(camera)
+	Scene.painted = painted
 end
 
 local cleaned = false
