@@ -1,9 +1,11 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "2"
+local BUILD = "3"
 local LIB_BYTES = 147735
+local SIGN_COOLDOWN = 3
+local SIGN_RESCAN = 20
 
-print("leet.cheats: rp build " .. BUILD)
+print("leet.cheats: rp build " .. BUILD .. " (price signs)")
 
 getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
 
@@ -494,6 +496,7 @@ end
 local Market = {
 	slots = {},
 	pushed = {},
+	tags = {},
 	van = {},
 	listings = {},
 	taps = {},
@@ -502,7 +505,10 @@ local Market = {
 	queued = {},
 	sketched = {},
 	zones = {},
-	stats = { slots = 0, pushed = 0, pinned = 0, van = 0, listings = 0 },
+	signs_dirty = false,
+	join_dirty = false,
+	sign_census = { three_d = 0, gui = 0, junk = 0 },
+	stats = { slots = 0, pushed = 0, pinned = 0, tags = 0, van = 0, listings = 0 },
 }
 
 do
@@ -818,6 +824,11 @@ do
 		Market.slots = found
 		Market.stats.slots = total
 		Market.replay_pushes()
+
+		if Market.stats.tags > 0 then
+			Market.adopt_tags()
+		end
+
 		Market.dirty = false
 		table.clear(Market.queued)
 
@@ -886,6 +897,11 @@ do
 
 		table.clear(Market.queued)
 		Market.stats.slots = total
+
+		if Market.stats.tags > 0 then
+			Market.adopt_tags()
+		end
+
 		Market.dirty = false
 	end
 
@@ -895,6 +911,10 @@ do
 				if looks_like_slot(instance) and instance.Parent then
 					Market.queued[instance.Parent] = true
 					Market.dirty = true
+				end
+
+				if instance.Name == "ThreeDTextParams" then
+					Market.signs_dirty = true
 				end
 			end)
 		end)
@@ -1328,6 +1348,7 @@ do
 				end
 
 				Market.pushed[entry.key] = entry
+				Market.join_dirty = true
 			end
 		end
 
@@ -1708,6 +1729,383 @@ do
 
 		return count, nil
 	end
+
+	local PRICE_MARKS = { "₽", "руб", "P ", "₽", "$" }
+	local SIGN_GAP = 10
+	local SIGN_STUDS = 9
+
+	local function json_text(raw)
+		if type(raw) ~= "string" then
+			return
+		end
+
+		local text = string.match(raw, '"text":"(.-)"')
+
+		if text == nil then
+			return
+		end
+
+		text = string.gsub(text, "\\n", " ")
+		text = string.gsub(text, '\\"', '"')
+
+		if #text < 2 or #text > 96 then
+			return
+		end
+
+		return text
+	end
+
+	local function spelled(host)
+		local ok, children = pcall(function()
+			return host:GetChildren()
+		end)
+
+		if not ok then
+			return
+		end
+
+		local letters = ""
+
+		for _, part in next, children do
+			if #tostring(part.Name) == 1 then
+				letters = letters .. part.Name
+			end
+		end
+
+		if #letters >= 3 then
+			return letters
+		end
+	end
+
+	local function price_in(text)
+		local digits = Util.stripped(text)
+
+		if digits == nil or digits <= 0 then
+			return
+		end
+
+		if string.match(text, "^[%d%s.,]+%s*[P₽]$") ~= nil then
+			return digits
+		end
+
+		if string.match(text, "^[P₽]%s*[%d%s.,]+$") ~= nil then
+			return digits
+		end
+
+		for _, mark in next, PRICE_MARKS do
+			if string.find(text, mark, 1, true) then
+				return digits
+			end
+		end
+
+		if string.match(text, "^[%s%d.,]+$") ~= nil then
+			return digits
+		end
+	end
+
+	local function zone_of(host)
+		local node = host
+
+		for _ = 1, 5 do
+			if node == nil then
+				break
+			end
+
+			if string.find(node.Name, "ShopZone", 1, true) then
+				return node.Name
+			end
+
+			node = node.Parent
+		end
+
+		return host.Name
+	end
+
+	local function model_anchor(host)
+		local ok, position = pcall(function()
+			if host:IsA("Model") then
+				return host:GetPivot().Position
+			end
+
+			if host:IsA("BasePart") then
+				return host.Position
+			end
+
+			local part = host:FindFirstChildWhichIsA("BasePart", true)
+
+			if part ~= nil then
+				return part.Position
+			end
+		end)
+
+		if ok then
+			return position
+		end
+	end
+
+	local function gui_anchor(label)
+		local node = label.Parent
+
+		for _ = 1, 4 do
+			if node == nil then
+				return
+			end
+
+			local position = model_anchor(node)
+
+			if position == nil then
+				local ok, adornee = pcall(function()
+					return node.Adornee
+				end)
+
+				if ok and adornee ~= nil then
+					position = model_anchor(adornee)
+				end
+			end
+
+			if position ~= nil then
+				return position
+			end
+
+			node = node.Parent
+		end
+	end
+
+	function Market.adopt_tags()
+		local found = Market.tags
+
+		for _, entry in next, found do
+			local gap = SIGN_GAP
+
+			for _, other in next, found do
+				if other ~= entry then
+					local away = (other.position - entry.position).Magnitude
+
+					if away < gap then
+						if entry.name == nil and other.name ~= nil then
+							gap = away
+							entry.name = other.name
+							entry.dup = true
+						elseif entry.price == nil and other.price ~= nil then
+							gap = away
+							entry.price = other.price
+						end
+					end
+				end
+			end
+
+			if entry.name ~= nil then
+				local record = Catalog.find(nil, entry.name, nil)
+
+				if record ~= nil then
+					Catalog.merge(entry, record)
+					entry.catalogued = true
+				end
+
+				for _, pushed in next, Market.pushed do
+					if pushed.name ~= nil and string.lower(pushed.name) == string.lower(entry.name) then
+						entry.price = pushed.price or entry.price
+						entry.rarity = pushed.rarity or entry.rarity
+						entry.brand = entry.brand or pushed.brand
+						entry.fair = entry.fair or pushed.fair
+						entry.source = entry.source == "gui" and "gui+push" or "label+push"
+
+						break
+					end
+				end
+			end
+
+			entry.bare = (entry.price == nil and entry.rarity == nil and entry.name == nil)
+			entry.useful = (entry.price ~= nil or entry.catalogued == true or entry.rarity ~= nil)
+		end
+
+		for _, entry in next, found do
+			if entry.name ~= nil and entry.dup ~= true then
+				for _, other in next, found do
+					if other ~= entry and other.dup ~= true and other.name == entry.name and other.price == entry.price then
+						if (other.position - entry.position).Magnitude < SIGN_GAP then
+							other.dup = true
+						end
+					end
+				end
+			end
+		end
+
+		for _, slot in next, Market.slots do
+			if slot.position ~= nil then
+				local named, priced
+				local name_gap, price_gap = SIGN_STUDS, SIGN_STUDS
+
+				for _, entry in next, found do
+					local away = (entry.position - slot.position).Magnitude
+
+					if away < name_gap and entry.name ~= nil and entry.useful == true then
+						name_gap = away
+						named = entry
+					end
+
+					if away < price_gap and entry.price ~= nil then
+						price_gap = away
+						priced = entry
+					end
+				end
+
+				if named ~= nil and slot.name == nil then
+					slot.name = named.name
+					slot.rarity = slot.rarity or named.rarity
+					slot.fair = slot.fair or named.fair
+					slot.brand = slot.brand or named.brand
+					slot.catalogued = slot.catalogued or named.catalogued
+				end
+
+				if priced ~= nil then
+					slot.price = slot.price or priced.price
+
+					if named ~= nil and slot.rarity == nil then
+						slot.rarity = named.rarity
+					end
+				end
+
+				if named ~= nil then
+					named.dup = true
+				end
+
+				if priced ~= nil then
+					priced.dup = true
+				end
+
+				if named ~= nil or priced ~= nil then
+					slot.bare = (slot.price == nil and slot.rarity == nil and slot.name == nil)
+				end
+			end
+		end
+
+		Market.join_dirty = false
+	end
+
+	function Market.scan_tags()
+		local found = {}
+
+		local ok, all = pcall(function()
+			return workspace:GetDescendants()
+		end)
+
+		if not ok then
+			return 0
+		end
+
+		local function split_text(text)
+			local head, tail = string.match(text, "^(.-)%s*([%d][%d%s.,]*)%s*[₽P$]?%s*$")
+
+			if head == nil then
+				return
+			end
+
+			head = string.gsub(head, "%s+$", "")
+
+			if #head < 3 then
+				return nil, Util.stripped(tail)
+			end
+
+			return head, Util.stripped(tail)
+		end
+
+		local function push_named(text)
+			local lower = string.lower(text)
+
+			for _, pushed in next, Market.pushed do
+				if pushed.name ~= nil and string.lower(pushed.name) == lower then
+					return true
+				end
+			end
+
+			return false
+		end
+
+		local census = { three_d = 0, gui = 0, junk = 0, objects = 0, labels = 0 }
+		Market.sign_census = census
+
+		local function spot(position)
+			return tostring(math.floor(position.X))
+				.. ":"
+				.. tostring(math.floor(position.Y))
+				.. ":"
+				.. tostring(math.floor(position.Z))
+		end
+
+		local function record(host, position, text, kind)
+			census[kind] = census[kind] + 1
+
+			local head, tail_number = split_text(text)
+			local entry = {
+				source = kind == "gui" and "gui" or "label",
+				key = (kind == "gui" and "gui:" or "label:") .. spot(position),
+				text = text,
+				position = position,
+				price = price_in(text) or tail_number,
+				zone = zone_of(host),
+			}
+
+			if head ~= nil then
+				entry.name = head
+			elseif entry.price == nil then
+				entry.name = text
+			end
+
+			found[entry.key] = entry
+		end
+
+		for _, instance in next, all do
+			if string.find(instance.Name, "ThreeDText", 1, true) then
+				census.objects = census.objects + 1
+			end
+
+			if instance:IsA("StringValue") and instance.Name == "ThreeDTextParams" then
+				local host = instance.Parent
+				local text = json_text(instance.Value)
+
+				if text == nil and host ~= nil then
+					local alt = spelled(host)
+
+					if alt ~= nil and (Catalog.by_name[string.lower(alt)] ~= nil or push_named(alt)) then
+						text = alt
+					end
+				end
+
+				local position = host ~= nil and model_anchor(host) or nil
+
+				if text ~= nil and position ~= nil then
+					record(host, position, text, "three_d")
+				else
+					census.junk = census.junk + 1
+				end
+			elseif instance:IsA("TextLabel") then
+				census.labels = census.labels + 1
+				local text = Util.clip(string.gsub(tostring(instance.Text), "^%s*(.-)%s*$", "%1"), 96)
+
+				if #text >= 2 then
+					local interesting = price_in(text) ~= nil
+						or split_text(text) ~= nil
+						or Catalog.by_name[string.lower(text)] ~= nil
+						or push_named(text)
+
+					local position = interesting and gui_anchor(instance) or nil
+
+					if position ~= nil then
+						record(instance.Parent, position, text, "gui")
+					elseif interesting then
+						census.junk = census.junk + 1
+					end
+				end
+			end
+		end
+
+		Market.tags = found
+		Market.stats.tags = Util.count_keys(found)
+		Market.adopt_tags()
+
+		return Market.stats.tags
+	end
 end
 
 local Visual = { records = {} }
@@ -1849,6 +2247,14 @@ do
 		if Util.on("market_shop") then
 			for _, entry in next, Market.slots do
 				push_candidate(out, entry, origin, studs, min_rank, deals_only)
+			end
+		end
+
+		if Util.on("market_signs") then
+			for _, entry in next, Market.tags do
+				if entry.name ~= nil and entry.dup ~= true and entry.useful == true then
+					push_candidate(out, entry, origin, studs, min_rank, deals_only)
+				end
 			end
 		end
 
@@ -2154,6 +2560,13 @@ do
 	})
 
 	main:toggle({
+		name = "shop price signs",
+		flag = "market_signs",
+		default = true,
+		tooltip = "reads the 3D signs the game itself puts over racks, pairs name with price and rarity",
+	})
+
+	main:toggle({
 		name = "black market van",
 		flag = "market_van",
 		default = true,
@@ -2329,8 +2742,9 @@ do
 		tooltip = "re-indexes the workspace looking for sale slots",
 		callback = function()
 			local total = Market.rebuild()
+			local tags = Market.scan_tags()
 
-			note(string.format("world slots: %d", total))
+			note(string.format("slots %d · signs %d", total, tags))
 		end,
 	})
 
@@ -2374,7 +2788,7 @@ do
 			end
 
 			print(string.format(
-				"leet.cheats report: catalogue=%d numbers=%d names=%d slots=%d filled=%d pushed=%d pinned=%d van=%d listings=%d taps=%d bands=%.2f-%.2f",
+				"leet.cheats report: catalogue=%d numbers=%d names=%d slots=%d filled=%d pushed=%d pinned=%d signs=%d van=%d listings=%d taps=%d bands=%.2f-%.2f",
 				#Catalog.records,
 				Util.count_keys(Catalog.by_number),
 				Util.count_keys(Catalog.by_name),
@@ -2382,6 +2796,7 @@ do
 				filled,
 				Market.stats.pushed,
 				pinned,
+				Market.stats.tags,
 				Market.stats.van,
 				Market.stats.listings,
 				#Market.taps,
@@ -2390,11 +2805,13 @@ do
 			))
 
 			print(string.format(
-				"leet.cheats gates: esp=%s shop=%s loose=%s deals=%s min_rarity=%s studs=%s limit=%s drawn=%d",
+				"leet.cheats gates: esp=%s shop=%s loose=%s signs=%s deals=%s lines=%s min_rarity=%s studs=%s limit=%s drawn=%d",
 				tostring(Util.on("market_esp")),
 				tostring(Util.on("market_shop")),
 				tostring(Util.on("market_loose")),
+				tostring(Util.on("market_signs")),
 				tostring(Util.on("market_deals")),
+				tostring(Util.on("market_tags")),
 				tostring(Util.pick("market_rarity", "?")),
 				tostring(Util.number("market_studs", 0)),
 				tostring(Util.number("market_limit", 0)),
@@ -2456,15 +2873,56 @@ do
 				))
 			end
 
-			note(string.format("slots %d · filled %d · pushed %d · pinned %d", Market.stats.slots, filled, Market.stats.pushed, pinned))
+			print(string.format(
+				"leet.cheats signs: three_d=%d gui=%d skipped=%d objects=%d labels=%d",
+				Market.sign_census.three_d,
+				Market.sign_census.gui,
+				Market.sign_census.junk,
+				Market.sign_census.objects,
+				Market.sign_census.labels
+			))
+
+			shown = 0
+
+			for _, entry in next, Market.tags do
+				if shown >= 8 then
+					break
+				end
+
+				shown = shown + 1
+
+				print(string.format(
+					"leet.cheats sign: %s | src=%s name=%s price=%s rarity=%s zone=%s dup=%s known=%s pos=%s",
+					tostring(entry.key),
+					tostring(entry.source),
+					tostring(entry.name),
+					tostring(entry.price),
+					tostring(entry.rarity),
+					tostring(entry.zone),
+					tostring(entry.dup),
+					tostring(entry.catalogued),
+					tostring(entry.position)
+				))
+			end
+
+			note(string.format(
+				"slots %d · filled %d · pushed %d · pinned %d · signs %d",
+				Market.stats.slots,
+				filled,
+				Market.stats.pushed,
+				pinned,
+				Market.stats.tags
+			))
 		end,
 	})
 
 	Labels.catalogue = status:label({ name = "catalogue: loading" })
 	Labels.slots = status:label({ name = "world slots: 0" })
 	Labels.pushed = status:label({ name = "pushed records: 0" })
+	Labels.signs = status:label({ name = "price signs: 0" })
 	Labels.van = status:label({ name = "van stock: 0" })
 	Labels.listings = status:label({ name = "listings: 0" })
+	Labels.filled = status:label({ name = "with data: 0" })
 	Labels.shown = status:label({ name = "drawn now: 0" })
 
 	Market.paint = function()
@@ -2488,6 +2946,22 @@ do
 			Labels.listings.set("listings: " .. Market.stats.listings)
 		end
 
+		if Labels.signs then
+			Labels.signs.set("price signs: " .. Market.stats.tags)
+		end
+
+		if Labels.filled then
+			local ready = 0
+
+			for _, slot in next, Market.slots do
+				if slot.bare ~= true then
+					ready = ready + 1
+				end
+			end
+
+			Labels.filled.set("with data: " .. ready)
+		end
+
 		if Labels.shown then
 			Labels.shown.set("drawn now: " .. Util.count_keys(Visual.records))
 		end
@@ -2500,12 +2974,34 @@ task.spawn(function()
 	print(string.format("leet.cheats: catalogue built %d items from %d configs", total, Util.count_keys(Catalog.loaded)))
 
 	Market.rebuild()
+
+	local signs = Market.scan_tags()
+	local lit = 0
+
+	for _, slot in next, Market.slots do
+		if slot.bare ~= true then
+			lit = lit + 1
+		end
+	end
+
+	print(string.format(
+		"leet.cheats: price signs %d, slots with data %d of %d | three_d=%d gui=%d objects=%d labels=%d",
+		signs,
+		lit,
+		Market.stats.slots,
+		Market.sign_census.three_d,
+		Market.sign_census.gui,
+		Market.sign_census.objects,
+		Market.sign_census.labels
+	))
+
 	Market.arm_taps()
 	Market.watch()
 
 	pcall(Market.probe_van)
 
 	local last = os.clock()
+	local last_sign = os.clock()
 
 	while not leet.dead do
 		task.wait(0.25)
@@ -2513,6 +3009,25 @@ task.spawn(function()
 		if os.clock() - last >= 1 / math.max(1, Util.number("market_hz", 1)) then
 			last = os.clock()
 			pcall(Market.flush)
+		end
+
+		if Util.on("market_signs")
+			and Market.signs_dirty
+			and os.clock() - last_sign >= SIGN_COOLDOWN then
+			last_sign = os.clock()
+			Market.signs_dirty = false
+			pcall(Market.scan_tags)
+		end
+
+		if Util.on("market_signs")
+			and Util.on("market_esp")
+			and os.clock() - last_sign >= SIGN_RESCAN then
+			last_sign = os.clock()
+			pcall(Market.scan_tags)
+		end
+
+		if Market.stats.tags > 0 and Market.join_dirty then
+			pcall(Market.adopt_tags)
 		end
 
 		if Util.on("market_esp") then
