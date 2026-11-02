@@ -1,6 +1,6 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "1"
+local BUILD = "2"
 local LIB_BYTES = 147735
 
 print("leet.cheats: apr2 build " .. BUILD)
@@ -121,11 +121,20 @@ function Util.key_active(flag)
 	end
 
 	if entry.mode == "hold" then
+		local key = entry.key
 		local ok, pressed = pcall(function()
-			return entry.key ~= nil and uis:IsKeyDown(entry.key)
+			if key == nil then
+				return false
+			end
+
+			if typeof(key) == "EnumItem" and key.EnumType == Enum.UserInputType then
+				return uis:IsMouseButtonPressed(key)
+			end
+
+			return uis:IsKeyDown(key)
 		end)
 
-		return ok and pressed == true
+		return (ok and pressed == true) or entry.active == true
 	end
 
 	return entry.active == true
@@ -1294,7 +1303,7 @@ do
 		name = "key",
 		flag = "aim_key",
 		mode = "hold",
-		default = Enum.KeyCode.MouseButton2,
+		default = Enum.UserInputType.MouseButton2,
 		tooltip = "hold to assist, the game already uses this for aiming",
 	})
 
