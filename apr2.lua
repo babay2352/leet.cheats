@@ -1,6 +1,6 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "2"
+local BUILD = "3"
 local LIB_BYTES = 147735
 
 print("leet.cheats: apr2 build " .. BUILD)
@@ -62,6 +62,63 @@ do
 		tostring(Env.click),
 		tostring(Env.hui)
 	))
+end
+
+local Game = {}
+
+do
+	local cache = {}
+
+	function Game.module(...)
+		local names = { ... }
+		local key = table.concat(names, ".")
+		local slot = cache[key]
+
+		if slot then
+			return slot.value
+		end
+
+		local node = replicated
+		local value = nil
+
+		for _, name in next, names do
+			if typeof(node) == "Instance" then
+				node = node:FindFirstChild(name)
+			else
+				node = nil
+			end
+		end
+
+		if node and node:IsA("ModuleScript") then
+			local ok, result = pcall(require, node)
+
+			if ok then
+				value = result
+			end
+		end
+
+		cache[key] = { value = value }
+
+		return value
+	end
+end
+
+do
+	local config = Game.module("WeaponSystemAssets", "GameConfig") or {}
+	local zombie = config.zombieDamage or {}
+
+	Game.config = config
+	Game.zombie_folder = zombie.folderName or "Zombies"
+	Game.health_attr = zombie.healthAttribute or "Health"
+	Game.dead_attr = zombie.deadAttribute or "Dead"
+	Game.zombie_zones = zombie.partMultipliers or {}
+	Game.meter = tonumber(config.meterMultiplier) or 3.5
+	Game.balance = Game.module("WeaponSystemAssets", "WeaponBalance") or {}
+	Game.stats = Game.module("WeaponSystemAssets", "Modules", "WeaponStats")
+	Game.faction = Game.module("Shared", "FactionMapConfig")
+	Game.crash = Game.module("Shared", "HeliCrashConfig")
+	Game.walk_speed = tonumber(config.walkSpeed) or 14
+	Game.sprint_speed = tonumber(config.sprintSpeed) or 24
 end
 
 local Util = {}
@@ -333,63 +390,6 @@ function Util.zone_parts(rig, zones)
 	end
 
 	return seen
-end
-
-local Game = {}
-
-do
-	local cache = {}
-
-	function Game.module(...)
-		local names = { ... }
-		local key = table.concat(names, ".")
-		local slot = cache[key]
-
-		if slot then
-			return slot.value
-		end
-
-		local node = replicated
-		local value = nil
-
-		for _, name in next, names do
-			if typeof(node) == "Instance" then
-				node = node:FindFirstChild(name)
-			else
-				node = nil
-			end
-		end
-
-		if node and node:IsA("ModuleScript") then
-			local ok, result = pcall(require, node)
-
-			if ok then
-				value = result
-			end
-		end
-
-		cache[key] = { value = value }
-
-		return value
-	end
-end
-
-do
-	local config = Game.module("WeaponSystemAssets", "GameConfig") or {}
-	local zombie = config.zombieDamage or {}
-
-	Game.config = config
-	Game.zombie_folder = zombie.folderName or "Zombies"
-	Game.health_attr = zombie.healthAttribute or "Health"
-	Game.dead_attr = zombie.deadAttribute or "Dead"
-	Game.zombie_zones = zombie.partMultipliers or {}
-	Game.meter = tonumber(config.meterMultiplier) or 3.5
-	Game.balance = Game.module("WeaponSystemAssets", "WeaponBalance") or {}
-	Game.stats = Game.module("WeaponSystemAssets", "Modules", "WeaponStats")
-	Game.faction = Game.module("Shared", "FactionMapConfig")
-	Game.crash = Game.module("Shared", "HeliCrashConfig")
-	Game.walk_speed = tonumber(config.walkSpeed) or 14
-	Game.sprint_speed = tonumber(config.sprintSpeed) or 24
 end
 
 local Catalog = {}
@@ -1053,6 +1053,309 @@ local ROW_TIPS = {
 
 local FONT_NAMES = { "Arial", "Gotham", "SourceSans", "Code" }
 local FONT_IDS = { Arial = 0, Gotham = 1, SourceSans = 2, Code = 3 }
+
+local Options = {}
+
+do
+	local applied = {}
+	local toggle_names = {
+		off = "off",
+		on = "on",
+		low = "low",
+		medium = "medium",
+		high = "high",
+		full = "full",
+	}
+
+	local function enum_value(name)
+		if name == nil then
+			return nil
+		end
+
+		if type(name) == "number" then
+			return name
+		end
+
+		local values = Game.module("Shared", "common", "enums", "ToggleValues")
+
+		if type(values) == "table" and values[name] then
+			return values[name]
+		end
+
+		return name
+	end
+
+	local function setting_key(name)
+		local settings = Game.module("Shared", "common", "enums", "Setting")
+
+		if type(settings) == "table" and settings[name] then
+			return settings[name]
+		end
+
+		return "setting." .. tostring(name)
+	end
+
+	local function controller()
+		return Game.module("Shared", "Systems", "ClientSettingsController")
+	end
+
+	function Options.apply(key_name, value, want)
+		local node = controller()
+
+		if type(node) ~= "table" or type(node.Set) ~= "function" then
+			if want then
+				print("leet.cheats: ClientSettingsController unavailable, " .. key_name .. " stays as is")
+			end
+
+			return false
+		end
+
+		local key = setting_key(key_name)
+
+		if not want then
+			local stored = applied[key]
+
+			if stored ~= nil then
+				pcall(node.Set, key, stored)
+				applied[key] = nil
+			end
+
+			return true
+		end
+
+		local target = enum_value(value)
+		local ok_now, current = pcall(node.Get, key)
+
+		if ok_now and current == target then
+			return true
+		end
+
+		if ok_now and applied[key] == nil then
+			applied[key] = current
+		end
+
+		local ok_set, accepted = pcall(node.Set, key, target)
+
+		if ok_set and accepted == false then
+			local stored = applied[key]
+
+			if stored ~= nil then
+				pcall(node.Set, key, stored)
+				applied[key] = nil
+			end
+
+			print("leet.cheats: game refused " .. key_name .. ", value is not in its own list")
+
+			return false
+		end
+
+		return true
+	end
+
+	function Options.multiply(name, value)
+		local node = controller()
+
+		if type(node) ~= "table" or type(node[name]) ~= "function" then
+			return false
+		end
+
+		local state = Options.overrides
+
+		if state[name] == nil then
+			state[name] = node[name]
+		end
+
+		if value == nil then
+			node[name] = state[name]
+			state[name] = nil
+
+			return true
+		end
+
+		node[name] = function()
+			return value
+		end
+
+		return true
+	end
+
+	Options.overrides = {}
+	Options.applied = applied
+	Options.names = toggle_names
+end
+
+local Recon = {}
+
+do
+	local function folder_inventory(name)
+		local folder = workspace:FindFirstChild(name)
+
+		if not folder then
+			print("leet.cheats recon: workspace." .. name .. " = missing")
+			return
+		end
+
+		local children = folder:GetChildren()
+
+		print(string.format("leet.cheats recon: workspace.%s = %d children, first = %s", name, #children, tostring(children[1] and children[1].Name)))
+
+		return children
+	end
+
+	local function attributes(node, label)
+		if not node then
+			return
+		end
+
+		local names = {}
+
+		for name, value in next, node:GetAttributes() do
+			table.insert(names, name .. "=" .. tostring(value))
+		end
+
+		table.sort(names)
+
+		print("leet.cheats recon: " .. label .. " attributes: " .. table.concat(names, ", "))
+	end
+
+	function Recon.run()
+		print("leet.cheats recon: place " .. tostring(game.PlaceId) .. " job " .. tostring(game.JobId))
+		print("leet.cheats recon: build " .. BUILD .. " server=" .. tostring(Env.server))
+
+		folder_inventory("Players")
+		folder_inventory(Game.zombie_folder)
+		folder_inventory("grounditems")
+		folder_inventory("Vehicles")
+		folder_inventory("PlayerCorpses")
+		folder_inventory("ZombieCorpses")
+		folder_inventory("_ClientPrefabVisuals")
+		folder_inventory("Airdrops")
+		folder_inventory("Convoy")
+		folder_inventory("HeliCrash")
+
+		local names = {}
+
+		for _, node in next, workspace:GetChildren() do
+			table.insert(names, node.ClassName .. " " .. node.Name)
+		end
+
+		print("leet.cheats recon: workspace top = " .. table.concat(names, " | "))
+
+		local zombie = workspace:FindFirstChild(Game.zombie_folder)
+
+		attributes(zombie and zombie:FindFirstChildOfClass("Model"), "zombie")
+
+		local loot = workspace:FindFirstChild("grounditems")
+		local first_loot = loot and loot:FindFirstChildOfClass("BasePart")
+
+		if first_loot then
+			print("leet.cheats recon: loot sample name = " .. first_loot.Name)
+			print("leet.cheats recon: loot class = " .. first_loot.ClassName)
+		end
+
+		local vehicle = workspace:FindFirstChild("Vehicles")
+
+		attributes(vehicle and vehicle:FindFirstChildOfClass("Model"), "vehicle")
+
+		print("leet.cheats recon: airdrop position = " .. tostring(Util.attr_vector(workspace, "AirdropPosition")))
+		print("leet.cheats recon: convoy position = " .. tostring(Util.attr_vector(workspace, "ConvoyPosition")))
+		print("leet.cheats recon: heli crash position = " .. tostring(Util.attr_vector(workspace, "HeliCrashPosition")))
+
+		local modules = {
+			{ "GameConfig", Game.config },
+			{ "FactionMapConfig", Game.faction },
+			{ "HeliCrashConfig", Game.crash },
+			{ "WeaponStats", Game.stats },
+			{ "WeaponBalance", Game.balance },
+		}
+
+		for _, spec in next, modules do
+			print("leet.cheats recon: module " .. spec[1] .. " = " .. (spec[2] and "ok" or "missing"))
+		end
+
+		print("leet.cheats recon: Items entries = " .. (Catalog.build() and #Catalog.build() or 0))
+		print("leet.cheats recon: meterMultiplier = " .. tostring(Game.meter) .. " walkSpeed = " .. tostring(Game.walk_speed))
+
+		local character = Sources.character(lp)
+
+		print("leet.cheats recon: my rig = " .. Util.rig_of(character) .. " character = " .. tostring(character and character:GetFullName()))
+		print("leet.cheats recon: my faction = " .. tostring(Sources.faction(lp)))
+
+		for _, player in next, players:GetPlayers() do
+			print(string.format(
+				"leet.cheats recon: %s faction=%s relation=%s deployed=%s model=%s",
+				player.Name,
+				tostring(Sources.faction(player)),
+				tostring(Sources.relation(player)),
+				tostring(Sources.deployed(player)),
+				tostring(Sources.character(player) and "ok" or "none")
+			))
+		end
+
+		local camera = workspace.CurrentCamera
+
+		if camera then
+			for _, name in next, { "Recoil", "Spread", "Bob", "Sway", "CameraAngle", "FieldOfView" } do
+				local ok, value = pcall(function()
+					return camera[name]
+				end)
+
+				if ok and value ~= nil then
+					print(string.format("leet.cheats recon: camera.%s = %s", name, tostring(value)))
+				end
+			end
+		end
+
+		local tool = character and character:FindFirstChildOfClass("Tool")
+
+		if tool then
+			local stats = (function()
+				local ok, value = pcall(function()
+					return Game.stats and Game.stats.Get(tool)
+				end)
+
+				return ok and value
+			end)()
+
+			print("leet.cheats recon: tool = " .. tool.Name .. " stats = " .. (stats and "ok" or "nil"))
+
+			if type(stats) == "table" then
+				print("leet.cheats recon: recoil table = " .. tostring(stats.recoil and stats.recoil.vertical))
+				print("leet.cheats recon: hipFireSpread = " .. tostring(stats.hipFireSpread))
+			end
+		else
+			print("leet.cheats recon: no tool equipped, weapon handling stays untested")
+		end
+
+		local remote_names = {}
+
+		for _, node in next, replicated:GetChildren() do
+			if node.ClassName == "RemoteEvent" or node.ClassName == "RemoteFunction" or node:IsA("Folder") then
+				table.insert(remote_names, node.ClassName .. " " .. node.Name)
+			end
+		end
+
+		print("leet.cheats recon: replicatedstorage top = " .. table.concat(remote_names, " | "))
+
+		local serde = replicated:FindFirstChild("AutoSerde")
+
+		if serde then
+			local list = {}
+
+			for _, node in next, serde:GetChildren() do
+				table.insert(list, node.Name)
+			end
+
+			table.sort(list)
+
+			print("leet.cheats recon: AutoSerde messages = " .. #list .. " -> " .. table.concat(list, ", "))
+		end
+
+		print("leet.cheats recon: _RMH present = " .. tostring(replicated:FindFirstChild("_RMH") ~= nil))
+		print("leet.cheats recon: scene entries this frame = " .. #Scene.list)
+		print("leet.cheats recon: done")
+	end
+end
 
 local window = leet:window({
 	name = "leet.cheats | AR2",
@@ -1781,13 +2084,21 @@ do
 
 	option_toggle(options, "shadows in game options", "go_shadows", "shadows", "off", "on", "writes the game setting instead of Lighting")
 
+	local zombie_updates = 0
+
 	options:dropdown({
 		name = "zombie visual update",
 		flag = "go_zombie_update",
 		items = { "low", "medium", "high", "full" },
 		default = "full",
 		tooltip = "how often zombie visuals refresh, full keeps animated zombies readable",
-		callback = function(value)
+		callback = function(bool)
+			if zombie_updates == 0 then
+				zombie_updates = 1
+
+				return
+			end
+
 			Options.apply("zombieVisualUpdating", Util.pick("go_zombie_update", "full"), true)
 		end,
 	})
@@ -1837,6 +2148,8 @@ do
 		tooltip = "lists the live modes on the watermark",
 	})
 
+	local ui_binds = 0
+
 	theming:keybind({
 		name = "ui bind",
 		flag = "ui_bind",
@@ -1844,7 +2157,13 @@ do
 		default = Enum.KeyCode.End,
 		tooltip = "shows or hides the whole menu",
 		callback = function(bool)
-			window.set_menu_visibility(bool)
+			ui_binds = ui_binds + 1
+
+			if ui_binds == 1 then
+				return
+			end
+
+			window.set_menu_visibility(not bool)
 		end,
 	})
 
@@ -2120,118 +2439,6 @@ do
 	reset_config = leet:get_config()
 
 	refresh_list()
-end
-
-local Options = {}
-
-do
-	local applied = {}
-	local toggle_names = {
-		off = "off",
-		on = "on",
-		low = "low",
-		medium = "medium",
-		high = "high",
-		full = "full",
-	}
-
-	local function enum_value(name)
-		if name == nil then
-			return nil
-		end
-
-		if type(name) == "number" then
-			return name
-		end
-
-		local values = Game.module("Shared", "common", "enums", "ToggleValues")
-
-		if type(values) == "table" and values[name] then
-			return values[name]
-		end
-
-		return name
-	end
-
-	local function setting_key(name)
-		local settings = Game.module("Shared", "common", "enums", "Setting")
-
-		if type(settings) == "table" and settings[name] then
-			return settings[name]
-		end
-
-		return "setting." .. tostring(name)
-	end
-
-	local function controller()
-		return Game.module("Shared", "Systems", "ClientSettingsController")
-	end
-
-	function Options.apply(key_name, value, want)
-		local node = controller()
-
-		if type(node) ~= "table" or type(node.Set) ~= "function" then
-			if want then
-				print("leet.cheats: ClientSettingsController unavailable, " .. key_name .. " stays as is")
-			end
-
-			return false
-		end
-
-		local key = setting_key(key_name)
-
-		if want then
-			local ok, before = pcall(node.Get, key)
-
-			if ok and applied[key] == nil then
-				applied[key] = before
-			end
-
-			pcall(node.Set, key, enum_value(value))
-
-			return true
-		end
-
-		local stored = applied[key]
-
-		if stored ~= nil then
-			pcall(node.Set, key, stored)
-			applied[key] = nil
-		end
-
-		return true
-	end
-
-	function Options.multiply(name, value)
-		local node = controller()
-
-		if type(node) ~= "table" or type(node[name]) ~= "function" then
-			return false
-		end
-
-		local state = Options.overrides
-
-		if state[name] == nil then
-			state[name] = node[name]
-		end
-
-		if value == nil then
-			node[name] = state[name]
-			state[name] = nil
-
-			return true
-		end
-
-		node[name] = function()
-			return value
-		end
-
-		return true
-	end
-
-	Options.overrides = {}
-	Options.applied = applied
-	Options.names = toggle_names
 end
 
 local Weapon = { patched = setmetatable({}, { __mode = "k" }), last = 0, dirty = false }
@@ -3569,179 +3776,6 @@ do
 		pcall(function()
 			Watermark.gui:Destroy()
 		end)
-	end
-end
-
-local Recon = {}
-
-do
-	local function folder_inventory(name)
-		local folder = workspace:FindFirstChild(name)
-
-		if not folder then
-			print("leet.cheats recon: workspace." .. name .. " = missing")
-			return
-		end
-
-		local children = folder:GetChildren()
-
-		print(string.format("leet.cheats recon: workspace.%s = %d children, first = %s", name, #children, tostring(children[1] and children[1].Name)))
-
-		return children
-	end
-
-	local function attributes(node, label)
-		if not node then
-			return
-		end
-
-		local names = {}
-
-		for name, value in next, node:GetAttributes() do
-			table.insert(names, name .. "=" .. tostring(value))
-		end
-
-		table.sort(names)
-
-		print("leet.cheats recon: " .. label .. " attributes: " .. table.concat(names, ", "))
-	end
-
-	function Recon.run()
-		print("leet.cheats recon: place " .. tostring(game.PlaceId) .. " job " .. tostring(game.JobId))
-		print("leet.cheats recon: build " .. BUILD .. " server=" .. tostring(Env.server))
-
-		folder_inventory("Players")
-		folder_inventory(Game.zombie_folder)
-		folder_inventory("grounditems")
-		folder_inventory("Vehicles")
-		folder_inventory("PlayerCorpses")
-		folder_inventory("ZombieCorpses")
-		folder_inventory("_ClientPrefabVisuals")
-		folder_inventory("Airdrops")
-		folder_inventory("Convoy")
-		folder_inventory("HeliCrash")
-
-		local names = {}
-
-		for _, node in next, workspace:GetChildren() do
-			table.insert(names, node.ClassName .. " " .. node.Name)
-		end
-
-		print("leet.cheats recon: workspace top = " .. table.concat(names, " | "))
-
-		local zombie = workspace:FindFirstChild(Game.zombie_folder)
-
-		attributes(zombie and zombie:FindFirstChildOfClass("Model"), "zombie")
-
-		local loot = workspace:FindFirstChild("grounditems")
-		local first_loot = loot and loot:FindFirstChildOfClass("BasePart")
-
-		if first_loot then
-			print("leet.cheats recon: loot sample name = " .. first_loot.Name)
-			print("leet.cheats recon: loot class = " .. first_loot.ClassName)
-		end
-
-		local vehicle = workspace:FindFirstChild("Vehicles")
-
-		attributes(vehicle and vehicle:FindFirstChildOfClass("Model"), "vehicle")
-
-		print("leet.cheats recon: airdrop position = " .. tostring(Util.attr_vector(workspace, "AirdropPosition")))
-		print("leet.cheats recon: convoy position = " .. tostring(Util.attr_vector(workspace, "ConvoyPosition")))
-		print("leet.cheats recon: heli crash position = " .. tostring(Util.attr_vector(workspace, "HeliCrashPosition")))
-
-		local modules = {
-			{ "GameConfig", Game.config },
-			{ "FactionMapConfig", Game.faction },
-			{ "HeliCrashConfig", Game.crash },
-			{ "WeaponStats", Game.stats },
-			{ "WeaponBalance", Game.balance },
-		}
-
-		for _, spec in next, modules do
-			print("leet.cheats recon: module " .. spec[1] .. " = " .. (spec[2] and "ok" or "missing"))
-		end
-
-		print("leet.cheats recon: Items entries = " .. (Catalog.build() and #Catalog.build() or 0))
-		print("leet.cheats recon: meterMultiplier = " .. tostring(Game.meter) .. " walkSpeed = " .. tostring(Game.walk_speed))
-
-		local character = Sources.character(lp)
-
-		print("leet.cheats recon: my rig = " .. Util.rig_of(character) .. " character = " .. tostring(character and character:GetFullName()))
-		print("leet.cheats recon: my faction = " .. tostring(Sources.faction(lp)))
-
-		for _, player in next, players:GetPlayers() do
-			print(string.format(
-				"leet.cheats recon: %s faction=%s relation=%s deployed=%s model=%s",
-				player.Name,
-				tostring(Sources.faction(player)),
-				tostring(Sources.relation(player)),
-				tostring(Sources.deployed(player)),
-				tostring(Sources.character(player) and "ok" or "none")
-			))
-		end
-
-		local camera = workspace.CurrentCamera
-
-		if camera then
-			for _, name in next, { "Recoil", "Spread", "Bob", "Sway", "CameraAngle", "FieldOfView" } do
-				local ok, value = pcall(function()
-					return camera[name]
-				end)
-
-				if ok and value ~= nil then
-					print(string.format("leet.cheats recon: camera.%s = %s", name, tostring(value)))
-				end
-			end
-		end
-
-		local tool = character and character:FindFirstChildOfClass("Tool")
-
-		if tool then
-			local stats = (function()
-				local ok, value = pcall(function()
-					return Game.stats and Game.stats.Get(tool)
-				end)
-
-				return ok and value
-			end)()
-
-			print("leet.cheats recon: tool = " .. tool.Name .. " stats = " .. (stats and "ok" or "nil"))
-
-			if type(stats) == "table" then
-				print("leet.cheats recon: recoil table = " .. tostring(stats.recoil and stats.recoil.vertical))
-				print("leet.cheats recon: hipFireSpread = " .. tostring(stats.hipFireSpread))
-			end
-		else
-			print("leet.cheats recon: no tool equipped, weapon handling stays untested")
-		end
-
-		local remote_names = {}
-
-		for _, node in next, replicated:GetChildren() do
-			if node.ClassName == "RemoteEvent" or node.ClassName == "RemoteFunction" or node:IsA("Folder") then
-				table.insert(remote_names, node.ClassName .. " " .. node.Name)
-			end
-		end
-
-		print("leet.cheats recon: replicatedstorage top = " .. table.concat(remote_names, " | "))
-
-		local serde = replicated:FindFirstChild("AutoSerde")
-
-		if serde then
-			local list = {}
-
-			for _, node in next, serde:GetChildren() do
-				table.insert(list, node.Name)
-			end
-
-			table.sort(list)
-
-			print("leet.cheats recon: AutoSerde messages = " .. #list .. " -> " .. table.concat(list, ", "))
-		end
-
-		print("leet.cheats recon: _RMH present = " .. tostring(replicated:FindFirstChild("_RMH") ~= nil))
-		print("leet.cheats recon: scene entries this frame = " .. #Scene.list)
-		print("leet.cheats recon: done")
 	end
 end
 
