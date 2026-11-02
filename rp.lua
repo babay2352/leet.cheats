@@ -1,12 +1,12 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "9"
+local BUILD = "10"
 local LIB_BYTES = 147735
 local SIGN_COOLDOWN = 3
 local SIGN_RESCAN = 20
 local JOIN_COOLDOWN = 1
 
-print("leet.cheats: rp build " .. BUILD .. " (items learned once stay named everywhere, no need to walk up to them)")
+print("leet.cheats: rp build " .. BUILD .. " (shop nameplates are quarantined, rack items get real names from the asset API)")
 
 getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
 
@@ -522,6 +522,11 @@ local Market = {
 	roots = {},
 	pushed = {},
 	ledger = {},
+	plates = {},
+	web = {},
+	asked = {},
+	queue = {},
+	pending = 0,
 	tags = {},
 	van = {},
 	listings = {},
@@ -547,6 +552,8 @@ local Market = {
 		exact = 0,
 		memory = 0,
 		recalled = 0,
+		web = 0,
+		web_named = 0,
 	},
 }
 
@@ -970,7 +977,7 @@ do
 					Market.stats.memory = Market.stats.memory + 1
 				end
 
-				if type(entry.name) == "string" then
+				if type(entry.name) == "string" and not Market.is_plate(entry.name) then
 					record.name = entry.name
 				end
 
@@ -1028,7 +1035,7 @@ do
 			local record = Market.ledger[key]
 
 			if record ~= nil and (key_is_type(key) or stamp - (record.stamp or 0) < SLOT_TTL) then
-				if entry.name == nil and type(record.name) == "string" then
+				if entry.name == nil and type(record.name) == "string" and not Market.is_plate(record.name) then
 					entry.name = record.name
 					filled = true
 				end
@@ -1091,6 +1098,181 @@ do
 	Market.model_number = model_number
 	Market.ref_number = ref_number
 	Market.ledger_keys = ledger_keys
+
+	function Market.is_plate(name)
+		if type(name) ~= "string" then
+			return false
+		end
+
+		return Market.plates[string.lower(name)] == true
+	end
+
+	function Market.mark_plates()
+		local seen = {}
+
+		for _, tag in next, Market.tags do
+			local text = tag.name
+
+			if type(text) == "string" and tag.price == nil and tag.reseller ~= true then
+				local needle = string.lower(text)
+				local hit = seen[needle]
+
+				if hit == nil then
+					hit = { count = 0, shops = 0, zones = {} }
+					seen[needle] = hit
+				end
+
+				hit.count = hit.count + 1
+
+				if hit.catalogued == nil and Catalog.by_name[needle] ~= nil then
+					hit.catalogued = true
+				end
+
+				local zone = tag.shop or tag.zone
+
+				if type(zone) == "string" and hit.zones[zone] == nil then
+					hit.zones[zone] = true
+					hit.shops = hit.shops + 1
+				end
+			end
+		end
+
+		local plates = {}
+
+		for needle, hit in next, seen do
+			if hit.count >= 3 and hit.shops >= 2 and hit.catalogued ~= true then
+				plates[needle] = true
+			end
+		end
+
+		Market.plates = plates
+
+		for _, tag in next, Market.tags do
+			if type(tag.name) == "string" and plates[string.lower(tag.name)] == true then
+				tag.plate = true
+				tag.dup = true
+			else
+				tag.plate = nil
+			end
+		end
+
+		for _, entry in next, Market.slots do
+			if type(entry.name) == "string" and plates[string.lower(entry.name)] == true then
+				entry.name = nil
+				entry.bare = (entry.price == nil and entry.rarity == nil)
+			end
+		end
+
+		for _, entry in next, Market.roots do
+			if type(entry.name) == "string" and plates[string.lower(entry.name)] == true then
+				entry.name = nil
+				entry.bare = (entry.price == nil and entry.rarity == nil and entry.id == nil)
+			end
+		end
+	end
+
+	local WEB_BASE = "https://economy.roblox.com/v2/assets/"
+	local WEB_PENDING = 4
+	local WEB_QUEUE = 240
+	local WEB_FAILS = 6
+
+	local function web_name(body)
+		local name = string.match(body, '"AssetId"%s*:%s*%d+,-?"Name"%s*:%s*"([^"]*)"')
+
+		if name == nil then
+			return nil
+		end
+
+		return (string.gsub(name, "\\/", "/"))
+	end
+
+	local function web_seller(body)
+		return string.match(body, '"Creator"%s*:%s*{.-"Name"%s*:%s*"([^"]*)"')
+	end
+
+	function Market.ask(entry)
+		if entry == nil or entry.name ~= nil or Market.web_off == true then
+			return
+		end
+
+		if type(entry.id) ~= "number" or entry.id < 1 then
+			return
+		end
+
+		local id = entry.id
+
+		if Market.web[id] ~= nil or Market.asked[id] ~= nil then
+			return
+		end
+
+		if #Market.queue >= WEB_QUEUE then
+			return
+		end
+
+		Market.asked[id] = entry.assets or true
+		Market.queue[#Market.queue + 1] = id
+		Market.stats.web = Market.stats.web + 1
+	end
+
+	local function web_learn(id, name, seller)
+		local assets = Market.asked[id]
+
+		Market.web[id] = {
+			name = name,
+			seller = seller,
+		}
+
+		Market.stats.web_named = Market.stats.web_named + 1
+
+		Market.remember({
+			id = id,
+			name = name,
+			seller = seller,
+			assets = type(assets) == "table" and assets or nil,
+		})
+
+		Market.join_dirty = true
+	end
+
+	function Market.web_tick()
+		if Market.web_off == true or not Util.on("market_web") then
+			return
+		end
+
+		while #Market.queue > 0 and Market.pending < WEB_PENDING do
+			local id = table.remove(Market.queue, 1)
+
+			Market.pending = Market.pending + 1
+
+			task.spawn(function()
+				local ok, body = pcall(function()
+					return game:HttpGet(WEB_BASE .. id .. "/details")
+				end)
+
+				Market.pending = Market.pending - 1
+
+				local name = nil
+
+				if ok and type(body) == "string" then
+					name = web_name(body)
+				end
+
+				if name == nil or #name < 2 then
+					Market.web[id] = false
+					Market.web_fails = (Market.web_fails or 0) + 1
+
+					if Market.web_fails >= WEB_FAILS and Market.stats.web_named == 0 then
+						Market.web_off = true
+						print("leet.cheats: asset API gave no names, lookup switched off")
+					end
+
+					return
+				end
+
+				web_learn(id, name, web_seller(body))
+			end)
+		end
+	end
 
 	function Market.read_host(host)
 		if host == nil or host.Parent == nil then
@@ -2691,7 +2873,7 @@ do
 			local name_gap, price_gap = ITEM_GAP, ITEM_GAP
 
 			for _, tag in next, Market.tags do
-				if tag.reseller ~= true and tag.position ~= nil then
+				if tag.reseller ~= true and tag.plate ~= true and tag.position ~= nil then
 					local away = (tag.position - root.position).Magnitude
 
 					if away < ITEM_GAP then
@@ -2836,6 +3018,10 @@ do
 	end
 
 	local function fits(entry, mode)
+		if entry.plate == true then
+			return false
+		end
+
 		if mode == "name_only" then
 			return entry.name ~= nil and entry.price == nil
 		end
@@ -2933,6 +3119,7 @@ do
 
 	function Market.adopt_tags()
 		local found = Market.tags
+		Market.mark_plates()
 		local by_price = Market.push_by_price()
 		local cells = grid_of(found)
 		local by_name = {}
@@ -3391,6 +3578,10 @@ do
 
 		entry.dist = away
 		out[#out + 1] = entry
+
+		if entry.name == nil then
+			Market.ask(entry)
+		end
 
 		if entry.memory == true then
 			Visual.filled = (Visual.filled or 0) + 1
@@ -4090,6 +4281,13 @@ do
 	})
 
 	main:toggle({
+		name = "asset name lookup",
+		flag = "market_web",
+		default = true,
+		tooltip = "resolves each rack item id through the public asset API, so names appear without walking up",
+	})
+
+	main:toggle({
 		name = "loose pushes",
 		flag = "market_loose",
 		default = true,
@@ -4433,13 +4631,14 @@ do
 			))
 
 			print(string.format(
-				"leet.cheats gates: esp=%s shop=%s items=%s loose=%s signs=%s stalls=%s deals=%s lines=%s min_rarity=%s studs=%s limit=%s drawn=%d",
+				"leet.cheats gates: esp=%s shop=%s items=%s loose=%s signs=%s stalls=%s web=%s deals=%s lines=%s min_rarity=%s studs=%s limit=%s drawn=%d",
 				tostring(Util.on("market_esp")),
 				tostring(Util.on("market_shop")),
 				tostring(Util.on("market_items")),
 				tostring(Util.on("market_loose")),
 				tostring(Util.on("market_signs")),
 				tostring(Util.on("market_stalls")),
+				tostring(Util.on("market_web")),
 				tostring(Util.on("market_deals")),
 				tostring(Util.on("market_tags")),
 				tostring(Util.pick("market_rarity", "?")),
@@ -4492,11 +4691,14 @@ do
 			))
 
 			print(string.format(
-				"leet.cheats memory: keys=%d named=%d filled=%d pushes=%d",
+				"leet.cheats memory: keys=%d named=%d filled=%d pushes=%d web=%d/%d plates=%d",
 				Market.stats.memory,
 				Market.stats.recalled,
 				Visual.filled or 0,
-				Market.stats.pushed
+				Market.stats.pushed,
+				Market.stats.web_named,
+				Market.stats.web,
+				Util.count_keys(Market.plates)
 			))
 
 			for tag in next, Catalog.loaded do
@@ -4647,7 +4849,7 @@ do
 			Labels.pushed.set(
 				"pushed records: " .. Market.stats.pushed
 				.. " · memory " .. Market.stats.memory
-				.. " · named from memory " .. Market.stats.recalled
+				.. " · asset names " .. Market.stats.web_named .. "/" .. Market.stats.web
 			)
 		end
 
@@ -4660,7 +4862,7 @@ do
 		end
 
 		if Labels.signs then
-			Labels.signs.set("price signs: " .. Market.stats.tags)
+			Labels.signs.set("price signs: " .. Market.stats.tags .. " · nameplates hidden " .. Util.count_keys(Market.plates))
 		end
 
 		if Labels.filled then
@@ -4783,6 +4985,8 @@ task.spawn(function()
 			last_join = os.clock()
 			pcall(Market.adopt_tags)
 		end
+
+		pcall(Market.web_tick)
 
 		if Util.on("market_esp") then
 			if os.clock() - last_draw >= Visual.sync_step then
