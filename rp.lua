@@ -1,12 +1,12 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "8"
+local BUILD = "9"
 local LIB_BYTES = 147735
 local SIGN_COOLDOWN = 3
 local SIGN_RESCAN = 20
 local JOIN_COOLDOWN = 1
 
-print("leet.cheats: rp build " .. BUILD .. " (esp redraws every frame, data refreshes on a timer)")
+print("leet.cheats: rp build " .. BUILD .. " (items learned once stay named everywhere, no need to walk up to them)")
 
 getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
 
@@ -452,6 +452,30 @@ do
 		return #Catalog.records
 	end
 
+	function Catalog.pick(entry)
+		if entry == nil then
+			return nil
+		end
+
+		local record = Catalog.find(entry.id, entry.name, entry.model)
+
+		if record ~= nil then
+			return record
+		end
+
+		local assets = entry.assets
+
+		if type(assets) == "table" then
+			for index = 1, #assets do
+				local hit = Catalog.by_number[assets[index]]
+
+				if hit ~= nil then
+					return hit
+				end
+			end
+		end
+	end
+
 	function Catalog.find(id, name, model)
 		if type(id) == "number" and Catalog.by_number[id] then
 			return Catalog.by_number[id]
@@ -497,6 +521,7 @@ local Market = {
 	slots = {},
 	roots = {},
 	pushed = {},
+	ledger = {},
 	tags = {},
 	van = {},
 	listings = {},
@@ -510,7 +535,19 @@ local Market = {
 	signs_dirty = false,
 	join_dirty = false,
 	sign_census = { three_d = 0, gui = 0, junk = 0, objects = 0, labels = 0, skipped = 0 },
-	stats = { slots = 0, pushed = 0, pinned = 0, tags = 0, van = 0, listings = 0, fair = 0, items = 0, exact = 0 },
+	stats = {
+		slots = 0,
+		pushed = 0,
+		pinned = 0,
+		tags = 0,
+		van = 0,
+		listings = 0,
+		fair = 0,
+		items = 0,
+		exact = 0,
+		memory = 0,
+		recalled = 0,
+	},
 }
 
 do
@@ -724,6 +761,337 @@ do
 		return nil
 	end
 
+	local function asset_digit(text)
+		if type(text) ~= "string" then
+			return nil
+		end
+
+		local digits = string.match(text, "%d+")
+
+		if digits == nil or #digits < 5 then
+			return nil
+		end
+
+		return tonumber(digits)
+	end
+
+	local function collect_assets(node, out)
+		local ok, parts = pcall(function()
+			return node:GetDescendants()
+		end)
+
+		if not ok or type(parts) ~= "table" then
+			return
+		end
+
+		local total = #parts
+
+		if total > 120 then
+			total = 120
+		end
+
+		for index = 1, total do
+			local part = parts[index]
+
+			if #out >= 10 then
+				return
+			end
+
+			pcall(function()
+				if part:IsA("MeshPart") then
+					out[#out + 1] = asset_digit(part.MeshId) or asset_digit(part.Texture)
+				elseif part:IsA("BaseMesh") then
+					out[#out + 1] = asset_digit(part.MeshId) or asset_digit(part.TextureId)
+				elseif part:IsA("Shirt") then
+					out[#out + 1] = asset_digit(part.ShirtTemplate)
+				elseif part:IsA("Pants") then
+					out[#out + 1] = asset_digit(part.PantsTemplate)
+				elseif part:IsA("Decal") then
+					out[#out + 1] = asset_digit(part.Texture)
+				end
+			end)
+
+			local skin = part:FindFirstChildOfClass("SurfaceAppearance")
+
+			if skin ~= nil then
+				pcall(function()
+					out[#out + 1] = asset_digit(skin.MaterialTexture)
+						or asset_digit(skin.DecalTexture)
+						or asset_digit(skin.Geometry)
+				end)
+			end
+		end
+	end
+
+	local ASSET_CACHE = setmetatable({}, { __mode = "k" })
+
+	function Market.mesh_assets(node)
+		if node == nil or typeof(node) ~= "Instance" then
+			return nil
+		end
+
+		local cached = ASSET_CACHE[node]
+
+		if cached ~= nil then
+			if #cached == 0 then
+				return nil
+			end
+
+			return cached
+		end
+
+		local out = {}
+
+		collect_assets(node, out)
+		ASSET_CACHE[node] = out
+
+		if #out == 0 then
+			return nil
+		end
+
+		return out
+	end
+
+	local TYPE_KEYS = { m = true, i = true, n = true, x = true }
+	local SLOT_TTL = 180
+
+	local function model_number(name)
+		if type(name) ~= "string" then
+			return nil
+		end
+
+		return tonumber(string.match(name, "^M_(%d+)$"))
+	end
+
+	local function ref_number(value)
+		if value == nil or typeof(value) ~= "Instance" then
+			return nil
+		end
+
+		local node = value
+
+		for _ = 1, 4 do
+			local number = model_number(node.Name)
+
+			if number ~= nil then
+				return number
+			end
+
+			local ok, parent = pcall(function()
+				return node.Parent
+			end)
+
+			if not ok or parent == nil then
+				return nil
+			end
+
+			node = parent
+		end
+	end
+
+	local function ledger_keys(entry)
+		local keys = {}
+
+		local model = entry.model
+			or ref_number(entry.visual_ref)
+			or ref_number(entry.slot_ref)
+			or (entry.host ~= nil and model_number(entry.host.Name) or nil)
+
+		if type(model) == "number" then
+			keys[#keys + 1] = "m:" .. model
+		end
+
+		if type(entry.id) == "number" then
+			keys[#keys + 1] = "i:" .. entry.id
+		elseif type(entry.id) == "string" then
+			keys[#keys + 1] = "i:" .. string.lower(entry.id)
+		end
+
+		if type(entry.slot_key) == "string" then
+			keys[#keys + 1] = "k:" .. entry.slot_key
+		end
+
+		if type(entry.slot_id) == "string" then
+			keys[#keys + 1] = "s:" .. string.lower(entry.slot_id)
+		end
+
+		if type(entry.shop) == "string" and entry.slot_index ~= nil then
+			keys[#keys + 1] = "z:" .. string.lower(entry.shop) .. "|" .. tostring(entry.slot_index)
+		end
+
+		if type(entry.name) == "string" then
+			keys[#keys + 1] = "n:" .. string.lower(entry.name)
+		end
+
+		if typeof(entry.position) == "Vector3" then
+			keys[#keys + 1] = "p:" .. math.floor(entry.position.X) .. "," .. math.floor(entry.position.Z)
+		end
+
+		local assets = entry.assets
+
+		if type(assets) == "table" then
+			local limit = #assets
+
+			if limit > 4 then
+				limit = 4
+			end
+
+			for index = 1, limit do
+				keys[#keys + 1] = "x:" .. assets[index]
+			end
+		end
+
+		return keys
+	end
+
+	local function key_is_type(key)
+		return TYPE_KEYS[string.sub(key, 1, 1)] == true
+	end
+
+	function Market.remember(entry, type_only)
+		if entry == nil or (entry.name == nil and entry.price == nil and entry.rarity == nil) then
+			return false
+		end
+
+		local keys = ledger_keys(entry)
+		local stamp = os.clock()
+		local wrote = false
+
+		for index = 1, #keys do
+			local key = keys[index]
+			local typed = key_is_type(key)
+
+			if not type_only or typed then
+				local record = Market.ledger[key]
+
+				if record == nil then
+					record = {}
+					Market.ledger[key] = record
+					Market.stats.memory = Market.stats.memory + 1
+				end
+
+				if type(entry.name) == "string" then
+					record.name = entry.name
+				end
+
+				if not typed and type(entry.price) == "number" then
+					record.price = entry.price
+				end
+
+				if type(entry.rarity) == "string" then
+					record.rarity = entry.rarity
+				end
+
+				if type(entry.brand) == "string" then
+					record.brand = entry.brand
+				end
+
+				if type(entry.fair) == "number" then
+					record.fair = entry.fair
+				end
+
+				if type(entry.kind) == "string" then
+					record.kind = entry.kind
+				end
+
+				if type(entry.seller) == "string" then
+					record.seller = entry.seller
+				end
+
+				if entry.catalogued == true then
+					record.catalogued = true
+				end
+
+				record.stamp = stamp
+				wrote = true
+			end
+		end
+
+		return wrote
+	end
+
+	function Market.recall(entry)
+		if entry == nil then
+			return false
+		end
+
+		if entry.name ~= nil and entry.price ~= nil and entry.rarity ~= nil then
+			return false
+		end
+
+		local keys = ledger_keys(entry)
+		local stamp = os.clock()
+		local filled = false
+
+		for index = 1, #keys do
+			local key = keys[index]
+			local record = Market.ledger[key]
+
+			if record ~= nil and (key_is_type(key) or stamp - (record.stamp or 0) < SLOT_TTL) then
+				if entry.name == nil and type(record.name) == "string" then
+					entry.name = record.name
+					filled = true
+				end
+
+				if entry.price == nil and not key_is_type(key) and type(record.price) == "number" then
+					entry.price = record.price
+					filled = true
+				end
+
+				if entry.rarity == nil and type(record.rarity) == "string" then
+					entry.rarity = record.rarity
+					filled = true
+				end
+
+				if entry.brand == nil and type(record.brand) == "string" then
+					entry.brand = record.brand
+					filled = true
+				end
+
+				if entry.fair == nil and type(record.fair) == "number" then
+					entry.fair = record.fair
+					filled = true
+				end
+
+				if entry.kind == nil and type(record.kind) == "string" then
+					entry.kind = record.kind
+					filled = true
+				end
+
+				if entry.seller == nil and type(record.seller) == "string" then
+					entry.seller = record.seller
+					filled = true
+				end
+
+				if record.catalogued == true then
+					entry.catalogued = true
+				end
+			end
+		end
+
+		if filled then
+			entry.memory = true
+			entry.bare = (entry.price == nil and entry.rarity == nil and entry.name == nil)
+			Market.stats.recalled = Market.stats.recalled + 1
+		end
+
+		return filled
+	end
+
+	function Market.forget_slot(entry)
+		local keys = ledger_keys(entry)
+
+		for index = 1, #keys do
+			if not key_is_type(keys[index]) then
+				Market.ledger[keys[index]] = nil
+			end
+		end
+	end
+
+	Market.model_number = model_number
+	Market.ref_number = ref_number
+	Market.ledger_keys = ledger_keys
+
 	function Market.read_host(host)
 		if host == nil or host.Parent == nil then
 			return
@@ -784,12 +1152,38 @@ do
 			return
 		end
 
-		local record = Catalog.find(entry.id, entry.name, nil)
+		local assets = Market.mesh_assets(host)
+		local extra = Market.mesh_assets(entry.visual)
+
+		if assets ~= nil and extra ~= nil then
+			local merged = {}
+
+			for index = 1, #assets do
+				merged[#merged + 1] = assets[index]
+			end
+
+			for index = 1, #extra do
+				if #merged >= 10 then
+					break
+				end
+
+				merged[#merged + 1] = extra[index]
+			end
+
+			entry.assets = merged
+		else
+			entry.assets = assets or extra
+		end
+
+		local record = Catalog.pick(entry)
 
 		if record then
 			Catalog.merge(entry, record)
 			entry.catalogued = true
 		end
+
+		Market.recall(entry)
+		Market.remember(entry)
 
 		entry.bare = (entry.price == nil and entry.rarity == nil and entry.name == nil)
 
@@ -1064,7 +1458,7 @@ do
 			return
 		end
 
-		local record = Catalog.find(entry.id, entry.name, entry.model)
+		local record = Catalog.pick(entry)
 
 		if record then
 			Catalog.merge(entry, record)
@@ -1480,6 +1874,8 @@ do
 				stock = tonumber(raw_stock),
 				seller = type(raw_seller) == "string" and raw_seller or nil,
 				id = id,
+				slot_id = (type(raw.slotId) == "string" and raw.slotId)
+					or (type(raw.SlotId) == "string" and raw.SlotId or nil),
 			}
 
 			local record = Catalog.find(entry.id, entry.name, raw.customModelName)
@@ -1488,6 +1884,25 @@ do
 				Catalog.merge(entry, record)
 				entry.catalogued = true
 			end
+
+			entry.model = Market.ref_number(entry.visual_ref) or Market.ref_number(entry.slot_ref)
+			entry.assets = Market.mesh_assets(entry.visual_ref) or Market.mesh_assets(entry.slot_ref)
+
+			if entry.catalogued ~= true then
+				local extra = Catalog.pick(entry)
+
+				if extra ~= nil then
+					Catalog.merge(entry, extra)
+					entry.catalogued = true
+				end
+			end
+
+			if channel == "SlotInfoClear" then
+				Market.forget_slot(entry)
+			end
+
+			Market.recall(entry)
+			Market.remember(entry)
 
 			if (entry.slot_ref ~= nil or entry.visual_ref ~= nil) and Market.ref_logged ~= true then
 				Market.ref_logged = true
@@ -1561,6 +1976,7 @@ do
 				slot.bare = false
 				slot.catalogued = slot.catalogued or entry.catalogued
 				entry.key = slot.key
+				Market.remember(slot)
 				pinned = true
 			end
 		end
@@ -1581,6 +1997,8 @@ do
 				entry.catalogued = entry.catalogued or pushed.catalogued
 			end
 		end
+
+		Market.remember(entry)
 	end
 
 	function Market.zone_anchor(shop)
@@ -1793,6 +2211,7 @@ do
 				}
 
 				Market.van[entry.key] = entry
+				Market.remember(entry, true)
 			end
 		end
 
@@ -1884,6 +2303,7 @@ do
 				}
 
 				Market.listings[entry.key] = entry
+				Market.remember(entry, true)
 			end
 		end
 
@@ -2151,7 +2571,9 @@ do
 			end
 		end
 
-		local record = Catalog.find(entry.id, entry.name, nil)
+		entry.assets = Market.mesh_assets(model)
+
+		local record = Catalog.pick(entry)
 
 		if record ~= nil then
 			Catalog.merge(entry, record)
@@ -2159,6 +2581,8 @@ do
 		end
 
 		Market.apply_pushes(entry)
+		Market.recall(entry)
+		Market.remember(entry)
 
 		entry.bare = (entry.price == nil and entry.rarity == nil and entry.name == nil)
 
@@ -2208,6 +2632,7 @@ do
 			target.id = target.id or pushed.id
 			target.catalogued = target.catalogued or pushed.catalogued
 			target.bare = false
+			Market.remember(target)
 		end
 
 		local exact = 0
@@ -2256,6 +2681,7 @@ do
 					root.catalogued = root.catalogued or slot.catalogued
 					root.slot_key = root.slot_key or slot.slot_key
 					slot.item_key = root.key
+					Market.remember(root)
 				end
 			end
 		end
@@ -2342,6 +2768,8 @@ do
 				end
 			end
 
+			Market.recall(root)
+			Market.remember(root)
 			root.bare = (root.price == nil and root.rarity == nil and root.name == nil and root.id == nil)
 			root.useful = true
 		end
@@ -2629,6 +3057,9 @@ do
 				if named ~= nil or priced ~= nil then
 					slot.bare = (slot.price == nil and slot.rarity == nil and slot.name == nil)
 				end
+
+				Market.recall(slot)
+				Market.remember(slot)
 			end
 		end
 
@@ -2818,6 +3249,7 @@ local Visual = {
 	sync_cost = 0,
 	drawn = 0,
 	candidates = 0,
+	filled = 0,
 }
 
 Market.Visual = Visual
@@ -2959,6 +3391,10 @@ do
 
 		entry.dist = away
 		out[#out + 1] = entry
+
+		if entry.memory == true then
+			Visual.filled = (Visual.filled or 0) + 1
+		end
 	end
 
 	function Visual.entries()
@@ -2973,6 +3409,8 @@ do
 		local min_rank = Rarity.order[Util.pick("market_rarity", "Common")] or 1
 		local deals_only = Util.on("market_deals")
 		local out = {}
+
+		Visual.filled = 0
 
 		local items_on = Util.on("market_items")
 
@@ -3124,12 +3562,12 @@ do
 		local color = (entry.rarity and Rarity.colors[entry.rarity]) or cfg.fallback
 		local used = 0
 
-		if cfg.names and (entry.name ~= nil or entry.id ~= nil) then
+		if cfg.names and entry.name ~= nil then
 			local node = slot_of(record, "name", "Text")
 
 			if node ~= nil then
 				style(node, cfg.font, size)
-				node.Text = Util.case(Util.clip(entry.name or ("item " .. tostring(entry.id)), 30), cfg.case_mode)
+				node.Text = Util.case(Util.clip(entry.name, 30), cfg.case_mode)
 				node.Color = color
 				used = add_line(lines, used, node, top)
 			end
@@ -4053,6 +4491,14 @@ do
 				Util.count_keys(Visual.records)
 			))
 
+			print(string.format(
+				"leet.cheats memory: keys=%d named=%d filled=%d pushes=%d",
+				Market.stats.memory,
+				Market.stats.recalled,
+				Visual.filled or 0,
+				Market.stats.pushed
+			))
+
 			for tag in next, Catalog.loaded do
 				print("leet.cheats config: " .. tag)
 			end
@@ -4198,7 +4644,11 @@ do
 		end
 
 		if Labels.pushed then
-			Labels.pushed.set("pushed records: " .. Market.stats.pushed)
+			Labels.pushed.set(
+				"pushed records: " .. Market.stats.pushed
+				.. " · memory " .. Market.stats.memory
+				.. " · named from memory " .. Market.stats.recalled
+			)
 		end
 
 		if Labels.van then
@@ -4241,10 +4691,11 @@ do
 
 		if Labels.shown then
 			Labels.shown.set(string.format(
-				"drawn %d · pool %d · budget %d · %.1f ms/frame",
+				"drawn %d · pool %d · budget %d · memory %d · %.1f ms/frame",
 				Visual.drawn or 0,
 				#Visual.active,
 				Visual.budget or 0,
+				Visual.filled or 0,
 				Visual.step or 0
 			))
 		end
