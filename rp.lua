@@ -1,11 +1,12 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "3"
+local BUILD = "4"
 local LIB_BYTES = 147735
 local SIGN_COOLDOWN = 3
 local SIGN_RESCAN = 20
+local JOIN_COOLDOWN = 1
 
-print("leet.cheats: rp build " .. BUILD .. " (price signs)")
+print("leet.cheats: rp build " .. BUILD .. " (price signs, no-deal gate)")
 
 getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
 
@@ -508,7 +509,7 @@ local Market = {
 	signs_dirty = false,
 	join_dirty = false,
 	sign_census = { three_d = 0, gui = 0, junk = 0 },
-	stats = { slots = 0, pushed = 0, pinned = 0, tags = 0, van = 0, listings = 0 },
+	stats = { slots = 0, pushed = 0, pinned = 0, tags = 0, van = 0, listings = 0, fair = 0 },
 }
 
 do
@@ -1821,6 +1822,43 @@ do
 		return host.Name
 	end
 
+	local function shop_of(host)
+		local node = host
+
+		for _ = 1, 8 do
+			if node == nil then
+				break
+			end
+
+			if string.find(node.Name, "ShopZone", 1, true) then
+				return node.Name
+			end
+
+			node = node.Parent
+		end
+	end
+
+	local function clean_text(text)
+		if text == nil then
+			return
+		end
+
+		local out = string.gsub(tostring(text), "<[^>]->", " ")
+
+		out = string.gsub(out, "%{C2}%{A0}", " ")
+		out = string.gsub(out, "%s+", " ")
+
+		return string.match(out, "^%s*(.-)%s*$")
+	end
+
+	local function reseller_text(text)
+		if text == nil then
+			return false
+		end
+
+		return string.find(text, "@", 1, true) ~= nil
+	end
+
 	local function model_anchor(host)
 		local ok, position = pcall(function()
 			if host:IsA("Model") then
@@ -1871,26 +1909,51 @@ do
 		end
 	end
 
+	function Market.push_by_price()
+		local index = {}
+
+		for _, pushed in next, Market.pushed do
+			local price = pushed.price
+
+			if price ~= nil and price > 0 and pushed.name ~= nil then
+				if index[price] == nil then
+					index[price] = pushed
+				else
+					index[price] = false
+				end
+			end
+		end
+
+		return index
+	end
+
 	function Market.adopt_tags()
 		local found = Market.tags
+		local by_price = Market.push_by_price()
 
 		for _, entry in next, found do
-			local gap = SIGN_GAP
+			if entry.price ~= nil and entry.name == nil then
+				local gap = SIGN_GAP
+				local donor
 
-			for _, other in next, found do
-				if other ~= entry then
-					local away = (other.position - entry.position).Magnitude
+				for _, other in next, found do
+					if other ~= entry and other.name ~= nil and other.price == nil then
+						local away = (other.position - entry.position).Magnitude
 
-					if away < gap then
-						if entry.name == nil and other.name ~= nil then
+						if away < gap then
 							gap = away
-							entry.name = other.name
-							entry.dup = true
-						elseif entry.price == nil and other.price ~= nil then
-							gap = away
-							entry.price = other.price
+							donor = other
 						end
 					end
+				end
+
+				if donor ~= nil then
+					entry.name = donor.name
+					entry.rarity = entry.rarity or donor.rarity
+					entry.brand = entry.brand or donor.brand
+					entry.fair = entry.fair or donor.fair
+					entry.reseller = entry.reseller or donor.reseller
+					donor.dup = true
 				end
 			end
 
@@ -1912,6 +1975,19 @@ do
 
 						break
 					end
+				end
+			end
+
+			if entry.name == nil and entry.price ~= nil then
+				local twin = by_price[entry.price]
+
+				if type(twin) == "table" then
+					entry.name = twin.name
+					entry.rarity = entry.rarity or twin.rarity
+					entry.brand = entry.brand or twin.brand
+					entry.fair = entry.fair or twin.fair
+					entry.catalogued = entry.catalogued or twin.catalogued
+					entry.source = entry.source .. "+pricetag"
 				end
 			end
 
@@ -1939,12 +2015,12 @@ do
 				for _, entry in next, found do
 					local away = (entry.position - slot.position).Magnitude
 
-					if away < name_gap and entry.name ~= nil and entry.useful == true then
+					if away < name_gap and entry.name ~= nil and entry.useful == true and entry.reseller ~= true then
 						name_gap = away
 						named = entry
 					end
 
-					if away < price_gap and entry.price ~= nil then
+					if away < price_gap and entry.price ~= nil and entry.reseller ~= true then
 						price_gap = away
 						priced = entry
 					end
@@ -1966,6 +2042,18 @@ do
 					end
 				end
 
+				if slot.name == nil and slot.price ~= nil then
+					local twin = by_price[slot.price]
+
+					if type(twin) == "table" then
+						slot.name = twin.name
+						slot.rarity = slot.rarity or twin.rarity
+						slot.brand = slot.brand or twin.brand
+						slot.fair = slot.fair or twin.fair
+						slot.catalogued = slot.catalogued or twin.catalogued
+					end
+				end
+
 				if named ~= nil then
 					named.dup = true
 				end
@@ -1980,6 +2068,21 @@ do
 			end
 		end
 
+		local known = 0
+
+		for _, entry in next, Market.slots do
+			if entry.fair ~= nil then
+				known = known + 1
+			end
+		end
+
+		for _, entry in next, found do
+			if entry.fair ~= nil then
+				known = known + 1
+			end
+		end
+
+		Market.stats.fair = known
 		Market.join_dirty = false
 	end
 
@@ -2034,6 +2137,14 @@ do
 		end
 
 		local function record(host, position, text, kind)
+			text = clean_text(text)
+
+			if text == nil or string.len(text) < 2 then
+				census.junk = census.junk + 1
+
+				return
+			end
+
 			census[kind] = census[kind] + 1
 
 			local head, tail_number = split_text(text)
@@ -2044,6 +2155,8 @@ do
 				position = position,
 				price = price_in(text) or tail_number,
 				zone = zone_of(host),
+				shop = shop_of(host),
+				reseller = reseller_text(text),
 			}
 
 			if head ~= nil then
@@ -2081,7 +2194,7 @@ do
 				end
 			elseif instance:IsA("TextLabel") then
 				census.labels = census.labels + 1
-				local text = Util.clip(string.gsub(tostring(instance.Text), "^%s*(.-)%s*$", "%1"), 96)
+				local text = Util.clip(clean_text(instance.Text) or "", 96)
 
 				if #text >= 2 then
 					local interesting = price_in(text) ~= nil
@@ -2218,14 +2331,8 @@ do
 			return
 		end
 
-		if deals_only then
-			if not entry.fair or not entry.price then
-				return
-			end
-
-			if entry.price >= entry.fair then
-				return
-			end
+		if deals_only and entry.fair ~= nil and entry.price ~= nil and entry.price >= entry.fair then
+			return
 		end
 
 		out[#out + 1] = entry
@@ -2252,7 +2359,7 @@ do
 
 		if Util.on("market_signs") then
 			for _, entry in next, Market.tags do
-				if entry.name ~= nil and entry.dup ~= true and entry.useful == true then
+				if entry.name ~= nil and entry.price ~= nil and entry.dup ~= true and entry.useful == true then
 					push_candidate(out, entry, origin, studs, min_rank, deals_only)
 				end
 			end
@@ -2655,7 +2762,7 @@ do
 		name = "underpriced only",
 		flag = "market_deals",
 		default = false,
-		tooltip = "keeps asks below the catalogue fair price",
+		tooltip = "hides asks above the catalogue fair price; items with no fair price always show",
 	})
 
 	filters:slider({
@@ -2774,10 +2881,15 @@ do
 		callback = function()
 			local filled = 0
 			local pinned = 0
+			local named = 0
 
 			for _, slot in next, Market.slots do
 				if slot.bare ~= true then
 					filled = filled + 1
+				end
+
+				if slot.name ~= nil then
+					named = named + 1
 				end
 			end
 
@@ -2815,6 +2927,34 @@ do
 				tostring(Util.pick("market_rarity", "?")),
 				tostring(Util.number("market_studs", 0)),
 				tostring(Util.number("market_limit", 0)),
+				Util.count_keys(Visual.records)
+			))
+
+			local passed = {}
+
+			pcall(function()
+				passed = Visual.entries()
+			end)
+
+			local projected = 0
+			local camera = workspace.CurrentCamera
+
+			if camera ~= nil then
+				for _, entry in next, passed do
+					if Util.project(camera, entry.position) ~= nil then
+						projected = projected + 1
+					end
+				end
+			end
+
+			print(string.format(
+				"leet.cheats draw: engine=%s named_slots=%d signs=%d fair=%d passed=%d projected=%d records=%d",
+				tostring(Env.drawing),
+				named,
+				Market.stats.tags,
+				Market.stats.fair,
+				#passed,
+				projected,
 				Util.count_keys(Visual.records)
 			))
 
@@ -2892,13 +3032,15 @@ do
 				shown = shown + 1
 
 				print(string.format(
-					"leet.cheats sign: %s | src=%s name=%s price=%s rarity=%s zone=%s dup=%s known=%s pos=%s",
+					"leet.cheats sign: %s | src=%s name=%s price=%s rarity=%s zone=%s shop=%s stall=%s dup=%s known=%s pos=%s",
 					tostring(entry.key),
 					tostring(entry.source),
 					tostring(entry.name),
 					tostring(entry.price),
 					tostring(entry.rarity),
 					tostring(entry.zone),
+					tostring(entry.shop),
+					tostring(entry.reseller),
 					tostring(entry.dup),
 					tostring(entry.catalogued),
 					tostring(entry.position)
@@ -2906,9 +3048,10 @@ do
 			end
 
 			note(string.format(
-				"slots %d · filled %d · pushed %d · pinned %d · signs %d",
+				"slots %d · filled %d · named %d · pushed %d · pinned %d · signs %d",
 				Market.stats.slots,
 				filled,
+				named,
 				Market.stats.pushed,
 				pinned,
 				Market.stats.tags
@@ -2952,14 +3095,19 @@ do
 
 		if Labels.filled then
 			local ready = 0
+			local with_name = 0
 
 			for _, slot in next, Market.slots do
 				if slot.bare ~= true then
 					ready = ready + 1
 				end
+
+				if slot.name ~= nil then
+					with_name = with_name + 1
+				end
 			end
 
-			Labels.filled.set("with data: " .. ready)
+			Labels.filled.set("with data: " .. ready .. " · named " .. with_name)
 		end
 
 		if Labels.shown then
@@ -2977,18 +3125,24 @@ task.spawn(function()
 
 	local signs = Market.scan_tags()
 	local lit = 0
+	local named = 0
 
 	for _, slot in next, Market.slots do
 		if slot.bare ~= true then
 			lit = lit + 1
 		end
+
+		if slot.name ~= nil then
+			named = named + 1
+		end
 	end
 
 	print(string.format(
-		"leet.cheats: price signs %d, slots with data %d of %d | three_d=%d gui=%d objects=%d labels=%d",
+		"leet.cheats: price signs %d, slots with data %d of %d, named %d | three_d=%d gui=%d objects=%d labels=%d",
 		signs,
 		lit,
 		Market.stats.slots,
+		named,
 		Market.sign_census.three_d,
 		Market.sign_census.gui,
 		Market.sign_census.objects,
@@ -3002,6 +3156,7 @@ task.spawn(function()
 
 	local last = os.clock()
 	local last_sign = os.clock()
+	local last_join = 0
 
 	while not leet.dead do
 		task.wait(0.25)
@@ -3026,7 +3181,8 @@ task.spawn(function()
 			pcall(Market.scan_tags)
 		end
 
-		if Market.stats.tags > 0 and Market.join_dirty then
+		if Market.join_dirty and os.clock() - last_join >= JOIN_COOLDOWN then
+			last_join = os.clock()
 			pcall(Market.adopt_tags)
 		end
 
