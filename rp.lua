@@ -1,6 +1,6 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "1"
+local BUILD = "2"
 local LIB_BYTES = 147735
 
 print("leet.cheats: rp build " .. BUILD)
@@ -300,6 +300,10 @@ do
 			end
 		end
 
+		if type(entry.templateId) == "number" and not Catalog.by_number[entry.templateId] then
+			Catalog.by_number[entry.templateId] = record
+		end
+
 		if type(entry.assetIds) == "table" then
 			for _, id in next, entry.assetIds do
 				if type(id) == "number" and not Catalog.by_number[id] then
@@ -496,7 +500,9 @@ local Market = {
 	connections = {},
 	dirty = true,
 	queued = {},
-	stats = { slots = 0, pushed = 0, van = 0, listings = 0 },
+	sketched = {},
+	zones = {},
+	stats = { slots = 0, pushed = 0, pinned = 0, van = 0, listings = 0 },
 }
 
 do
@@ -590,25 +596,75 @@ do
 			elseif child:IsA("Pants") then
 				entry.id = entry.id or Util.digits(child.PantsTemplate)
 				entry.kind = "Pants"
-			elseif child.Name == "Mannequin" then
-				local shirt = child:FindFirstChildOfClass("Shirt")
-				local pants = child:FindFirstChildOfClass("Pants")
-
-				if shirt then
-					entry.id = entry.id or Util.digits(shirt.ShirtTemplate)
-					entry.kind = "Shirt"
-				elseif pants then
-					entry.id = entry.id or Util.digits(pants.PantsTemplate)
-					entry.kind = "Pants"
-				end
-
-				local decal = child:FindFirstChildWhichIsA("Decal", true)
-
-				if decal then
-					entry.id = entry.id or Util.digits(decal.Texture)
-				end
+			elseif child:IsA("ObjectValue") and child.Name == "__ShopVisualRef" then
+				entry.visual = child.Value
 			end
 		end)
+	end
+
+	local function absorb_attributes(entry, instance)
+		local ok, attributes = pcall(function()
+			return instance:GetAttributes()
+		end)
+
+		if not ok or type(attributes) ~= "table" then
+			return
+		end
+
+		for key, value in next, attributes do
+			local lower = string.lower(key)
+
+			if lower == "price" or lower == "cost" or lower == "amount" then
+				entry.price = tonumber(value) or entry.price
+			elseif lower == "rarity" then
+				if type(value) == "string" then
+					entry.rarity = value
+				end
+			elseif lower == "itemname" or lower == "name" or lower == "title" or lower == "label" then
+				if type(value) == "string" and #value > 1 then
+					entry.name = value
+				end
+			elseif lower == "itemid" or lower == "templateid" or lower == "assetid" or lower == "id" then
+				entry.id = tonumber(value) or (type(value) == "string" and Util.digits(value)) or entry.id
+			elseif lower == "brand" then
+				if type(value) == "string" then
+					entry.brand = value
+				end
+			elseif lower == "fairprice" or lower == "fair" or lower == "baseprice" then
+				entry.fair = tonumber(value) or entry.fair
+			end
+		end
+	end
+
+	local function slot_identity(host)
+		local node = host
+
+		for _ = 1, 4 do
+			if node == nil then
+				break
+			end
+
+			local parent = node.Parent
+
+			if parent == nil then
+				break
+			end
+
+			if parent.Name == "ItemSlots" or parent.Name == "AccessorySlots" or string.match(parent.Name, "Slots$") then
+				local zone = parent.Parent
+				local index = tonumber(string.match(node.Name, "%d+"))
+
+				if zone and index then
+					return tostring(zone.Name) .. "|" .. tostring(index)
+				end
+
+				return nil
+			end
+
+			node = parent
+		end
+
+		return nil
 	end
 
 	function Market.read_host(host)
@@ -626,6 +682,15 @@ do
 			key = "slot:" .. full_name(host),
 		}
 
+		entry.slot_key = slot_identity(host)
+
+		if entry.slot_key then
+			entry.zone_number = tonumber(string.match(entry.slot_key, "(%d+)|"))
+			entry.slot_index = tonumber(string.match(entry.slot_key, "|(%d+)$"))
+		end
+
+		absorb_attributes(entry, host)
+
 		local ok, children = pcall(function()
 			return host:GetChildren()
 		end)
@@ -636,6 +701,7 @@ do
 
 		for _, child in next, children do
 			absorb_child(entry, child)
+			absorb_attributes(entry, child)
 
 			if child:IsA("Model") or child:IsA("BillboardGui") or child.Name == "ItemInfo" then
 				local ok_nested, nested_children = pcall(function()
@@ -645,16 +711,17 @@ do
 				if ok_nested then
 					for _, grand in next, nested_children do
 						absorb_child(entry, grand)
+						absorb_attributes(entry, grand)
 					end
 				end
 			end
 		end
 
-		if entry.price == nil and entry.rarity == nil and entry.name == nil and entry.id == nil then
-			return
-		end
-
 		entry.position = position_of(host)
+
+		if entry.position == nil and entry.visual ~= nil then
+			entry.position = position_of(entry.visual)
+		end
 
 		if entry.position == nil then
 			return
@@ -666,6 +733,8 @@ do
 			Catalog.merge(entry, record)
 			entry.catalogued = true
 		end
+
+		entry.bare = (entry.price == nil and entry.rarity == nil and entry.name == nil)
 
 		return entry
 	end
@@ -693,7 +762,19 @@ do
 			end
 
 			if instance:IsA("BasePart") then
-				return string.match(instance.Name, "^Slot_?%d+$") ~= nil
+				if string.match(instance.Name, "^Slot_?%d+$") ~= nil then
+					return true
+				end
+
+				local parent = instance.Parent
+
+				if parent and (parent.Name == "ItemSlots" or parent.Name == "AccessorySlots") then
+					return true
+				end
+			end
+
+			if instance:IsA("ObjectValue") then
+				return instance.Name == "__ShopVisualRef"
 			end
 
 			return false
@@ -726,6 +807,7 @@ do
 					local entry = Market.read_host(host)
 
 					if entry then
+						Market.enrich(entry)
 						found[host] = entry
 						total = total + 1
 					end
@@ -735,10 +817,38 @@ do
 
 		Market.slots = found
 		Market.stats.slots = total
+		Market.replay_pushes()
 		Market.dirty = false
 		table.clear(Market.queued)
 
 		return total
+	end
+
+	function Market.replay_pushes()
+		local replay = {}
+
+		for _, pushed in next, Market.pushed do
+			replay[#replay + 1] = pushed
+		end
+
+		if #replay == 0 then
+			return
+		end
+
+		table.clear(Market.pushed)
+
+		local pinned = 0
+
+		for _, pushed in next, replay do
+			if Market.attach(pushed) then
+				pinned = pinned + 1
+			end
+
+			Market.pushed[pushed.key] = pushed
+		end
+
+		Market.stats.pushed = Util.count_keys(Market.pushed)
+		Market.stats.pinned = pinned
 	end
 
 	function Market.flush()
@@ -826,25 +936,7 @@ do
 			entry.catalogued = true
 		end
 
-		for _, pushed in next, Market.pushed do
-			local matched = (entry.id ~= nil and pushed.id == entry.id)
-				or (entry.name ~= nil and pushed.name ~= nil and string.lower(entry.name) == string.lower(pushed.name))
-
-			if matched then
-				if entry.price == nil then
-					entry.price = pushed.price
-				end
-
-				if entry.rarity == nil then
-					entry.rarity = pushed.rarity
-				end
-
-				entry.brand = entry.brand or pushed.brand
-				entry.fair = entry.fair or pushed.fair
-
-				break
-			end
-		end
+		Market.apply_pushes(entry)
 	end
 end
 
@@ -861,21 +953,180 @@ do
 
 	local KEYS = {
 		price = true,
+		Price = true,
 		cost = true,
+		Cost = true,
 		amount = true,
+		Amount = true,
 		rarity = true,
+		Rarity = true,
+		rarityName = true,
 		name = true,
+		Name = true,
 		itemName = true,
+		ItemName = true,
+		displayName = true,
 		title = true,
 		itemId = true,
+		ItemId = true,
 		templateId = true,
+		TemplateId = true,
 		assetId = true,
+		AssetId = true,
+		asset = true,
+		id = true,
+		Id = true,
 		brand = true,
+		Brand = true,
 		sellerName = true,
 		listingId = true,
+		slot = true,
+		Slot = true,
+		slotId = true,
+		SlotId = true,
+		slotIndex = true,
+		SlotIndex = true,
+		index = true,
+		shop = true,
+		Shop = true,
+		shopName = true,
+		ShopName = true,
+		shopZone = true,
+		fairPrice = true,
+		FairPrice = true,
+		fair = true,
+		basePrice = true,
+		marketPrice = true,
+		brandName = true,
+		customModelName = true,
+		stock = true,
+		Stock = true,
+		count = true,
+		quantity = true,
+		ownerName = true,
+		playerName = true,
+		Seller = true,
 	}
 
-	local function harvest(node, depth, out)
+	local SLOT_KEYS = { "slot", "Slot", "slotId", "SlotId", "slotIndex", "SlotIndex", "index", "slotNum", "number" }
+	local SHOP_KEYS = { "shop", "Shop", "shopName", "ShopName", "shopZone", "zone", "store", "rack" }
+	local ID_KEYS = { "itemId", "ItemId", "templateId", "TemplateId", "assetId", "AssetId", "asset", "id", "Id" }
+	local NAME_KEYS = { "name", "Name", "itemName", "ItemName", "displayName", "title" }
+	local PRICE_KEYS = { "price", "Price", "cost", "Cost", "amount", "Amount" }
+	local RARITY_KEYS = { "rarity", "Rarity", "rarityName" }
+	local BRAND_KEYS = { "brand", "Brand", "brandName" }
+	local FAIR_KEYS = { "fairPrice", "FairPrice", "fair", "basePrice", "marketPrice" }
+	local STOCK_KEYS = { "stock", "Stock", "count", "quantity", "amount" }
+	local SELLER_KEYS = { "sellerName", "seller", "Seller", "ownerName", "playerName" }
+	local POSITION_KEYS = {
+		"position",
+		"Position",
+		"worldPosition",
+		"pos",
+		"cframe",
+		"CFrame",
+		"cf",
+		"part",
+		"Part",
+		"instance",
+		"target",
+		"visual",
+		"model",
+		"anchor",
+	}
+
+	local function field(raw, keys)
+		for _, key in next, keys do
+			local value = raw[key]
+
+			if value ~= nil then
+				return value
+			end
+		end
+	end
+
+	local function key_hint(key)
+		local slot = tonumber(key)
+		local id
+
+		if slot ~= nil then
+			if slot > 1000000 then
+				id = slot
+				slot = nil
+			elseif slot < 1 then
+				slot = nil
+			end
+		elseif type(key) == "string" then
+			slot = tonumber(string.match(key, "^Slot_?(%d+)$"))
+			id = tonumber(string.match(key, "^rbxassetid://(%d+)$"))
+		end
+
+		local shop
+
+		if type(key) == "string" then
+			if string.find(key, "[Ss]hop") or string.find(key, "[Zz]one") then
+				shop = key
+			end
+		end
+
+		return slot, shop, id
+	end
+
+	local function value_position(value)
+		if value == nil then
+			return
+		end
+
+		if typeof(value) == "Vector3" then
+			return value
+		end
+
+		if typeof(value) == "CFrame" then
+			return value.Position
+		end
+
+		if typeof(value) ~= "userdata" then
+			return
+		end
+
+		local ok, position = pcall(function()
+			if value:IsA("BasePart") then
+				return value.Position
+			end
+
+			if value:IsA("Model") then
+				return value:GetPivot().Position
+			end
+
+			if value:IsA("Vector3Value") or value:IsA("CFrameValue") then
+				local inner = value.Value
+
+				if typeof(inner) == "CFrame" then
+					return inner.Position
+				end
+
+				return inner
+			end
+
+			if value:IsA("ObjectValue") and value.Value ~= nil then
+				local inner = value.Value
+
+				if inner:IsA("BasePart") then
+					return inner.Position
+				end
+
+				if inner:IsA("Model") then
+					return inner:GetPivot().Position
+				end
+			end
+		end)
+
+		if ok then
+			return position
+		end
+	end
+
+	local function harvest(node, depth, out, hint_slot, hint_shop, hint_id)
 		if type(node) ~= "table" or depth > 5 then
 			return
 		end
@@ -888,45 +1139,179 @@ do
 			end
 		end
 
-		if informative >= 2 then
-			out[#out + 1] = node
+		local position = field(node, POSITION_KEYS)
+
+		if informative >= 2 or (informative >= 1 and position ~= nil) then
+			out[#out + 1] = {
+				raw = node,
+				slot = hint_slot,
+				shop = hint_shop,
+				id = hint_id,
+				position = value_position(position),
+			}
+
+			return
 		end
 
-		if informative == 0 then
-			for _, value in next, node do
-				if type(value) == "table" then
-					harvest(value, depth + 1, out)
-				end
+		for key, value in next, node do
+			if type(value) == "table" then
+				local slot, shop, id = key_hint(key)
+
+				harvest(value, depth + 1, out, slot or hint_slot, shop or hint_shop, id or hint_id)
 			end
 		end
 	end
 
+	local function describe(value, depth)
+		local kind = type(value)
+
+		if kind == "string" then
+			local sample = string.gsub(value, "%d+", "#")
+
+			if #sample > 26 then
+				sample = string.sub(sample, 1, 26)
+			end
+
+			return "Str(\"" .. sample .. "\")"
+		end
+
+		if kind == "number" then
+			return "Num(" .. tostring(value) .. ")"
+		end
+
+		if kind == "boolean" then
+			return "Bool(" .. tostring(value) .. ")"
+		end
+
+		if kind == "userdata" then
+			local ok, class = pcall(function()
+				return value.ClassName
+			end)
+
+			if ok then
+				return "Inst(" .. class .. "/" .. tostring(value.Name) .. ")"
+			end
+
+			return "UD(" .. kind .. ")"
+		end
+
+		if kind ~= "table" or depth > 3 then
+			return kind
+		end
+
+		local parts = {}
+		local seen = 0
+
+		for key, item in next, value do
+			seen = seen + 1
+
+			if seen <= 10 then
+				parts[#parts + 1] = tostring(key) .. "=" .. describe(item, depth + 1)
+			end
+		end
+
+		if seen > 10 then
+			parts[#parts + 1] = "+" .. tostring(seen - 10) .. "more"
+		end
+
+		return "{" .. table.concat(parts, ", ") .. "}"
+	end
+
+	function Market.sketch(channel, args)
+		local count = (Market.sketched[channel] or 0) + 1
+
+		Market.sketched[channel] = count
+
+		if count > 3 then
+			return
+		end
+
+		local parts = {}
+
+		for index = 1, #args do
+			parts[#parts + 1] = "a" .. index .. "=" .. describe(args[index], 1)
+		end
+
+		print("leet.cheats sketch[" .. channel .. "] #" .. count .. ": " .. table.concat(parts, " | "))
+	end
+
 	function Market.absorb(channel, args)
+		Market.sketch(channel, args)
+
+		local context_shop
+		local context_index
+		local context_position
+
+		for _, value in next, args do
+			local position = value_position(value)
+
+			if position ~= nil and context_position == nil then
+				context_position = position
+			elseif type(value) == "string" and context_shop == nil and string.find(value, "[Ss]hop") then
+				context_shop = value
+			elseif type(value) == "number" and context_index == nil and value >= 1 and value <= 4096 then
+				context_index = value
+			end
+		end
+
 		local found = {}
 
-		harvest(args, 0, found)
+		for _, value in next, args do
+			if type(value) == "table" then
+				harvest(value, 0, found)
+			end
+		end
 
-		for _, raw in next, found do
-			local id = tonumber(raw.itemId)
-				or tonumber(raw.templateId)
-				or tonumber(raw.assetId)
-				or tonumber(raw.id)
-				or (type(raw.id) == "string" and (Util.digits(raw.id) or raw.id) or nil)
+		for _, bag in next, found do
+			local raw = bag.raw
+			local raw_id = field(raw, ID_KEYS)
+			local raw_shop = field(raw, SHOP_KEYS)
+			local raw_slot = field(raw, SLOT_KEYS)
+			local raw_name = field(raw, NAME_KEYS)
+			local raw_price = field(raw, PRICE_KEYS)
+			local raw_rarity = field(raw, RARITY_KEYS)
+			local raw_brand = field(raw, BRAND_KEYS)
+			local raw_fair = field(raw, FAIR_KEYS)
+			local raw_stock = field(raw, STOCK_KEYS)
+			local raw_seller = field(raw, SELLER_KEYS)
+
+			local id = tonumber(raw_id)
+				or (type(raw_id) == "string" and (Util.digits(raw_id) or raw_id) or nil)
+				or bag.id
+
+			local shop = (type(raw_shop) == "string" and raw_shop)
+				or (type(raw_shop) == "number" and ("Shop_" .. tostring(raw_shop)))
+				or bag.shop
+				or context_shop
+
+			local slot_index = tonumber(raw_slot)
+				or (type(raw_slot) == "string" and Util.digits(raw_slot))
+				or bag.slot
+				or context_index
+
+			local position = bag.position or context_position
 
 			local entry = {
 				source = channel,
-				key = "push:"
-					.. channel
-					.. ":"
-					.. tostring(id or raw.name or raw.itemName or "?")
-					.. ":"
-					.. tostring(raw.price or raw.cost or ""),
-				name = type(raw.name) == "string" and raw.name
-					or (type(raw.itemName) == "string" and raw.itemName or (type(raw.title) == "string" and raw.title or nil)),
-				price = tonumber(raw.price) or tonumber(raw.cost) or tonumber(raw.amount),
-				rarity = type(raw.rarity) == "string" and raw.rarity or nil,
-				brand = type(raw.brand) == "string" and raw.brand or nil,
-				seller = type(raw.sellerName) == "string" and raw.sellerName or nil,
+				key = (shop and slot_index)
+						and ("slot:" .. tostring(shop) .. "|" .. tostring(slot_index))
+						or ("push:"
+							.. channel
+							.. ":"
+							.. tostring(id or raw_name or "?")
+							.. ":"
+							.. tostring(raw_price or "")
+							.. (position and ("@" .. math.floor(position.X) .. "," .. math.floor(position.Z)) or "")),
+				shop = type(shop) == "string" and shop or nil,
+				slot_index = slot_index,
+				position = position,
+				name = type(raw_name) == "string" and raw_name or nil,
+				price = tonumber(raw_price) or (type(raw_price) == "string" and Util.stripped(raw_price) or nil),
+				rarity = type(raw_rarity) == "string" and raw_rarity or nil,
+				brand = type(raw_brand) == "string" and raw_brand or nil,
+				fair = tonumber(raw_fair) or (type(raw_fair) == "string" and Util.stripped(raw_fair) or nil),
+				stock = tonumber(raw_stock),
+				seller = type(raw_seller) == "string" and raw_seller or nil,
 				id = id,
 			}
 
@@ -938,31 +1323,125 @@ do
 			end
 
 			if entry.name or entry.price or entry.rarity then
-				Market.pushed[entry.key] = entry
-
-				for _, slot in next, Market.slots do
-					local matched = (slot.id ~= nil and slot.id == entry.id)
-						or (slot.name ~= nil and entry.name ~= nil and string.lower(slot.name) == string.lower(entry.name))
-
-					if matched then
-						if slot.price == nil then
-							slot.price = entry.price
-						end
-
-						if slot.rarity == nil then
-							slot.rarity = entry.rarity
-						end
-
-						slot.brand = slot.brand or entry.brand
-						slot.fair = slot.fair or entry.fair
-					end
+				if Market.attach(entry) then
+					Market.stats.pinned = Market.stats.pinned + 1
 				end
+
+				Market.pushed[entry.key] = entry
 			end
 		end
 
 		Market.stats.pushed = Util.count_keys(Market.pushed)
 
 		return #found
+	end
+
+	local function zone_number(text)
+		if type(text) ~= "string" then
+			return nil
+		end
+
+		return tonumber(string.match(text, "(%d+)%s*$"))
+	end
+
+	local function push_matches(slot, entry)
+		if entry.position ~= nil and slot.position ~= nil then
+			if (entry.position - slot.position).Magnitude < 3 then
+				return true
+			end
+		end
+
+		if entry.slot_index ~= nil and entry.shop ~= nil and slot.slot_index == entry.slot_index then
+			local number = zone_number(entry.shop)
+
+			if number == nil or slot.zone_number == nil or number == slot.zone_number then
+				return true
+			end
+		end
+
+		if entry.id ~= nil and slot.id == entry.id then
+			return true
+		end
+
+		if entry.name ~= nil and slot.name ~= nil and string.lower(entry.name) == string.lower(slot.name) then
+			return true
+		end
+
+		return false
+	end
+
+	function Market.attach(entry)
+		local pinned = false
+
+		for _, slot in next, Market.slots do
+			if push_matches(slot, entry) then
+				slot.price = entry.price or slot.price
+				slot.rarity = entry.rarity or slot.rarity
+				slot.name = slot.name or entry.name
+				slot.brand = slot.brand or entry.brand
+				slot.fair = slot.fair or entry.fair
+				slot.id = slot.id or entry.id
+				slot.bare = false
+				slot.catalogued = slot.catalogued or entry.catalogued
+				entry.key = slot.key
+				pinned = true
+			end
+		end
+
+		return pinned
+	end
+
+	function Market.apply_pushes(entry)
+		for _, pushed in next, Market.pushed do
+			if push_matches(entry, pushed) then
+				entry.price = pushed.price or entry.price
+				entry.rarity = pushed.rarity or entry.rarity
+				entry.name = entry.name or pushed.name
+				entry.brand = entry.brand or pushed.brand
+				entry.fair = entry.fair or pushed.fair
+				entry.id = entry.id or pushed.id
+				entry.bare = false
+				entry.catalogued = entry.catalogued or pushed.catalogued
+			end
+		end
+	end
+
+	function Market.zone_anchor(shop)
+		if type(shop) ~= "string" then
+			return nil
+		end
+
+		local cached = Market.zones[shop]
+
+		if cached ~= nil then
+			if cached == false then
+				return nil
+			end
+
+			return cached
+		end
+
+		local ok, position = pcall(function()
+			local needle = string.lower(shop)
+
+			for _, child in next, workspace:GetChildren() do
+				if string.find(string.lower(child.Name), needle, 1, true) then
+					local part = child:FindFirstChildWhichIsA("BasePart", true)
+
+					if part then
+						return part.Position
+					end
+				end
+			end
+		end)
+
+		Market.zones[shop] = (ok and position) or false
+
+		if not ok or position == nil then
+			return nil
+		end
+
+		return position
 	end
 
 	function Market.arm_taps()
@@ -986,9 +1465,7 @@ do
 			if ok and remote and remote:IsA("RemoteEvent") then
 				local connected = pcall(function()
 					return remote.OnClientEvent:Connect(function(...)
-						for _, arg in next, { ... } do
-							Market.absorb(remote.Name, arg)
-						end
+						Market.absorb(remote.Name, { ... })
 					end)
 				end)
 
@@ -1329,7 +1806,7 @@ do
 	end
 
 	local function push_candidate(out, entry, origin, limit_studs, min_rank, deals_only)
-		if entry.position == nil then
+		if entry.position == nil or entry.bare == true then
 			return
 		end
 
@@ -1337,7 +1814,9 @@ do
 			return
 		end
 
-		if rank_of(entry) < min_rank then
+		local rank = rank_of(entry)
+
+		if rank > 0 and rank < min_rank then
 			return
 		end
 
@@ -1383,6 +1862,27 @@ do
 			for _, entry in next, Market.listings do
 				if entry.position ~= nil then
 					push_candidate(out, entry, origin, studs, min_rank, deals_only)
+				end
+			end
+		end
+
+		if Util.on("market_loose") then
+			local stacked = {}
+
+			for key, entry in next, Market.pushed do
+				if string.sub(tostring(key), 1, 5) ~= "slot:" then
+					if entry.position == nil and entry.shop ~= nil then
+						entry.position = Market.zone_anchor(entry.shop)
+					end
+
+					if entry.position ~= nil then
+						local anchor_key = tostring(math.floor(entry.position.X)) .. "," .. tostring(math.floor(entry.position.Z))
+						local count = (stacked[anchor_key] or 0) + 1
+
+						stacked[anchor_key] = count
+						entry.offset = count - 1
+						push_candidate(out, entry, origin, studs, min_rank, deals_only)
+					end
 				end
 			end
 		end
@@ -1631,7 +2131,7 @@ do
 	main:toggle({
 		name = "market esp",
 		flag = "market_esp",
-		default = false,
+		default = true,
 		tooltip = "master switch for every sale tag below",
 	})
 
@@ -1665,6 +2165,13 @@ do
 		flag = "market_grayled",
 		default = false,
 		tooltip = "grayled stock pinned over each seller, needs the probe",
+	})
+
+	main:toggle({
+		name = "loose pushes",
+		flag = "market_loose",
+		default = true,
+		tooltip = "draws pushed items at their own spot or over their shop building when no slot matched",
 	})
 
 	local lines = market_tab:section({ name = "tag lines", side = "right" })
@@ -1851,18 +2358,47 @@ do
 		name = "report",
 		tooltip = "prints what every source actually returned",
 		callback = function()
+			local filled = 0
+			local pinned = 0
+
+			for _, slot in next, Market.slots do
+				if slot.bare ~= true then
+					filled = filled + 1
+				end
+			end
+
+			for key in next, Market.pushed do
+				if string.sub(tostring(key), 1, 5) == "slot:" then
+					pinned = pinned + 1
+				end
+			end
+
 			print(string.format(
-				"leet.cheats report: catalogue=%d numbers=%d names=%d slots=%d pushed=%d van=%d listings=%d taps=%d bands=%.2f-%.2f",
+				"leet.cheats report: catalogue=%d numbers=%d names=%d slots=%d filled=%d pushed=%d pinned=%d van=%d listings=%d taps=%d bands=%.2f-%.2f",
 				#Catalog.records,
 				Util.count_keys(Catalog.by_number),
 				Util.count_keys(Catalog.by_name),
 				Market.stats.slots,
+				filled,
 				Market.stats.pushed,
+				pinned,
 				Market.stats.van,
 				Market.stats.listings,
 				#Market.taps,
 				Catalog.bands.low,
 				Catalog.bands.high
+			))
+
+			print(string.format(
+				"leet.cheats gates: esp=%s shop=%s loose=%s deals=%s min_rarity=%s studs=%s limit=%s drawn=%d",
+				tostring(Util.on("market_esp")),
+				tostring(Util.on("market_shop")),
+				tostring(Util.on("market_loose")),
+				tostring(Util.on("market_deals")),
+				tostring(Util.pick("market_rarity", "?")),
+				tostring(Util.number("market_studs", 0)),
+				tostring(Util.number("market_limit", 0)),
+				Util.count_keys(Visual.records)
 			))
 
 			for tag in next, Catalog.loaded do
@@ -1876,12 +2412,18 @@ do
 			local shown = 0
 
 			for _, entry in next, Market.slots do
-				if shown < 8 then
+				if shown >= 8 then
+					break
+				end
+
+				if entry.bare ~= true or shown < 4 then
 					shown = shown + 1
 
 					print(string.format(
-						"leet.cheats slot: %s | name=%s price=%s rarity=%s id=%s fair=%s known=%s",
+						"leet.cheats slot: %s | key=%s bare=%s name=%s price=%s rarity=%s id=%s fair=%s known=%s",
 						tostring(entry.key),
+						tostring(entry.slot_key),
+						tostring(entry.bare),
 						tostring(entry.name),
 						tostring(entry.price),
 						tostring(entry.rarity),
@@ -1902,8 +2444,11 @@ do
 				shown = shown + 1
 
 				print(string.format(
-					"leet.cheats push: %s | name=%s price=%s rarity=%s id=%s",
+					"leet.cheats push: %s | key=%s shop=%s slot=%s name=%s price=%s rarity=%s id=%s",
 					tostring(entry.source),
+					tostring(entry.key),
+					tostring(entry.shop),
+					tostring(entry.slot_index),
 					tostring(entry.name),
 					tostring(entry.price),
 					tostring(entry.rarity),
@@ -1911,7 +2456,7 @@ do
 				))
 			end
 
-			note(string.format("catalogue %d · slots %d · pushed %d", #Catalog.records, Market.stats.slots, Market.stats.pushed))
+			note(string.format("slots %d · filled %d · pushed %d · pinned %d", Market.stats.slots, filled, Market.stats.pushed, pinned))
 		end,
 	})
 
@@ -1962,7 +2507,7 @@ task.spawn(function()
 
 	local last = os.clock()
 
-	while true do
+	while not leet.dead do
 		task.wait(0.25)
 
 		if os.clock() - last >= 1 / math.max(1, Util.number("market_hz", 1)) then
@@ -1984,6 +2529,10 @@ end)
 
 if not leet:load_last_config() then
 	print("leet.cheats: nothing saved yet, defaults stand")
+end
+
+if not Util.on("market_esp") then
+	print("leet.cheats: market esp came back OFF from your saved config - press U or tick the box")
 end
 
 leet:enable_autosave()
