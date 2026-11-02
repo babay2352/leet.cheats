@@ -1,6 +1,6 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "3"
+local BUILD = "4"
 local LIB_BYTES = 147735
 
 print("leet.cheats: apr2 build " .. BUILD)
@@ -2568,7 +2568,7 @@ do
 	end
 end
 
-local Visual = { records = {}, host = nil }
+local Visual = { records = {}, host = nil, chams = {} }
 
 do
 	if not Env.drawing then
@@ -2621,6 +2621,12 @@ do
 	Visual.show = show
 
 	function Visual.free(rec)
+		if rec.chams then
+			Visual.release(rec.chams)
+
+			rec.chams = nil
+		end
+
 		for key, value in next, rec do
 			if typeof(value) == "Instance" then
 				pcall(function()
@@ -2640,19 +2646,63 @@ do
 		table.clear(rec)
 	end
 
-	local function host_folder()
-		if Visual.host and Visual.host.Parent then
-			return Visual.host
+	function Visual.acquire()
+		for _, node in next, Visual.chams do
+			if node.Parent == nil then
+				local ok = pcall(function()
+					node.Parent = Visual.host
+				end)
+
+				if ok then
+					return node
+				end
+			end
+		end
+	end
+
+	function Visual.release(node)
+		pcall(function()
+			node.Enabled = false
+			node.Adornee = nil
+			node.Parent = nil
+		end)
+	end
+
+	function Visual.init_chams()
+		local ok, host = pcall(function()
+			local folder = Instance.new("Folder")
+
+			folder.Name = "leet_esp"
+			folder.Parent = workspace
+
+			return folder
+		end)
+
+		if not ok then
+			return false
 		end
 
-		local folder = Instance.new("Folder")
+		Visual.host = host
 
-		folder.Name = "leet_esp"
-		folder.Parent = workspace
+		for _ = 1, 64 do
+			local good, node = pcall(function()
+				local light = Instance.new("Highlight")
 
-		Visual.host = folder
+				light.Name = "leet_cham"
+				light.Enabled = false
+				light.FillTransparency = 0.4
+				light.OutlineTransparency = 0
+				light.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 
-		return folder
+				return light
+			end)
+
+			if good and node then
+				Visual.chams[#Visual.chams + 1] = node
+			end
+		end
+
+		return #Visual.chams > 0
 	end
 
 	local function corners(ent, camera)
@@ -2798,7 +2848,7 @@ do
 		end
 
 		local x0, y0, x1, y1 = corners(ent, camera)
-		local thickness = Util.number("espsettings_thickness", 1)
+		local thickness = math.max(1, Util.number("espsettings_thickness", 1))
 		local seen = true
 
 		if Util.on("espsettings_visibleonly") then
@@ -2966,31 +3016,33 @@ do
 			local want = seen and Util.on(prefix .. "_chams")
 			local highlight = rec.chams
 
-			if not highlight and Env.highlight and ent.model then
-				highlight = Instance.new("Highlight")
+			if not highlight and want and Env.highlight and ent.model then
+				highlight = Visual.acquire()
 
-				highlight.Adornee = ent.model
-				highlight.FillTransparency = 0.4
-				highlight.OutlineTransparency = 0
-				highlight.Name = ""
-				highlight.Parent = host_folder()
-
-				rec.chams = highlight
+				if highlight then
+					highlight.Adornee = ent.model
+					rec.chams = highlight
+				end
 			end
 
 			if highlight then
-				local inner, inner_alpha = Util.color(prefix .. "_innerchamcolor", spec.color)
-				local outer = Util.color(prefix .. "_outerchamcolor", spec.color)
-
-				highlight.FillColor = inner
-				highlight.FillTransparency = 1 - inner_alpha
-				highlight.OutlineColor = outer
-
 				if want and Util.on(prefix .. "_chamsonlyvisible") then
 					want = Util.sees(camera, ent.position, ent.model)
 				end
 
-				highlight.Enabled = want == true
+				if want then
+					local inner, inner_alpha = Util.color(prefix .. "_innerchamcolor", spec.color)
+					local outer = Util.color(prefix .. "_outerchamcolor", spec.color)
+
+					highlight.FillColor = inner
+					highlight.FillTransparency = 1 - inner_alpha
+					highlight.OutlineColor = outer
+					highlight.Enabled = true
+				else
+					Visual.release(highlight)
+
+					rec.chams = nil
+				end
 			end
 		end
 
@@ -3083,6 +3135,8 @@ do
 
 			Visual.host = nil
 		end
+
+		Visual.chams = {}
 	end
 
 	Visual.crosshair = {}
@@ -3174,6 +3228,12 @@ do
 				end
 			end
 		end
+	end
+
+	Env.highlight = Visual.init_chams()
+
+	if not Env.highlight then
+		print("leet.cheats: highlight blocked, chams stays off")
 	end
 end
 
@@ -3425,10 +3485,9 @@ local Overrides = {
 	clock = 0,
 	watching = {},
 	state = {},
-	effects = setmetatable({}, { __mode = "k" }),
-	atmosphere = nil,
 	fov_written = nil,
 	fov_base = nil,
+	applied_clock = 0,
 }
 
 do
@@ -3451,6 +3510,46 @@ do
 		}
 	end
 
+	local written = {}
+
+	local function put(node, property, value)
+		local key = node:GetFullName() .. "." .. property
+		local entry = written[key]
+
+		if entry == nil then
+			local ok, current = pcall(function()
+				return node[property]
+			end)
+
+			if not ok then
+				written[key] = { dead = true }
+
+				return
+			end
+
+			entry = { value = current }
+			written[key] = entry
+		end
+
+		if entry.dead then
+			return
+		end
+
+		if value == nil then
+			pcall(function()
+				node[property] = entry.value
+			end)
+
+			written[key] = nil
+
+			return
+		end
+
+		pcall(function()
+			node[property] = value
+		end)
+	end
+
 	local function watch(node, property)
 		local key = node:GetFullName() .. "." .. property
 
@@ -3462,7 +3561,7 @@ do
 
 		leet:connection(node:GetPropertyChangedSignal(property), function()
 			if Overrides.active(property) then
-				Overrides.apply()
+				pcall(Overrides.apply)
 			end
 		end)
 	end
@@ -3487,39 +3586,27 @@ do
 		return false
 	end
 
-	local function set_atmosphere(want)
+	local function set_atmosphere(off)
 		local node = lighting:FindFirstChildOfClass("Atmosphere")
 
 		if not node then
 			return
 		end
 
-		if want ~= nil then
-			if Overrides.atmosphere == nil then
-				Overrides.atmosphere = node.Enabled
-			end
-
-			node.Enabled = want
-		elseif Overrides.atmosphere ~= nil then
-			node.Enabled = Overrides.atmosphere
-
-			Overrides.atmosphere = nil
+		if off then
+			put(node, "Density", 0)
+		else
+			put(node, "Density", nil)
 		end
 	end
 
-	local function set_effects(want)
+	local function set_effects(off)
 		for _, node in next, lighting:GetChildren() do
 			if node:IsA("BlurEffect") or node:IsA("ColorCorrectionEffect") or node:IsA("BloomEffect") or node:IsA("SunRaysEffect") then
-				if want then
-					if Overrides.effects[node] == nil then
-						Overrides.effects[node] = node.Enabled
-					end
-
-					node.Enabled = false
-				elseif Overrides.effects[node] ~= nil then
-					node.Enabled = Overrides.effects[node]
-
-					Overrides.effects[node] = nil
+				if off then
+					put(node, "Enabled", false)
+				else
+					put(node, "Enabled", nil)
 				end
 			end
 		end
@@ -3538,37 +3625,35 @@ do
 		if fullbright then
 			local level = math.clamp(Util.number("vis_bright", 3), 1, 12)
 
-			lighting.Brightness = level
-			lighting.Ambient = Color3.fromRGB(200, 200, 200)
-			lighting.OutdoorAmbient = Color3.fromRGB(220, 220, 220)
+			put(lighting, "Brightness", level)
+			put(lighting, "Ambient", Color3.fromRGB(200, 200, 200))
+			put(lighting, "OutdoorAmbient", Color3.fromRGB(220, 220, 220))
 		elseif state.fullbright then
-			lighting.Brightness = Overrides.saved.Brightness
-			lighting.Ambient = Overrides.saved.Ambient
-			lighting.OutdoorAmbient = Overrides.saved.OutdoorAmbient
+			put(lighting, "Brightness", nil)
+			put(lighting, "Ambient", nil)
+			put(lighting, "OutdoorAmbient", nil)
 		end
 
 		if nofog then
-			lighting.FogEnd = 1000000
-			lighting.FogStart = 1000000
-			lighting.FogColor = Color3.fromRGB(180, 190, 200)
-			set_atmosphere(false)
+			put(lighting, "FogEnd", 1000000)
+			put(lighting, "FogStart", 1000000)
+			set_atmosphere(true)
 		elseif state.nofog then
-			lighting.FogEnd = Overrides.saved.FogEnd
-			lighting.FogStart = Overrides.saved.FogStart
-			lighting.FogColor = Overrides.saved.FogColor
-			set_atmosphere(nil)
+			put(lighting, "FogEnd", nil)
+			put(lighting, "FogStart", nil)
+			set_atmosphere(false)
 		end
 
 		if noshadows then
-			lighting.GlobalShadows = false
+			put(lighting, "GlobalShadows", false)
 		elseif state.noshadows then
-			lighting.GlobalShadows = Overrides.saved.GlobalShadows
+			put(lighting, "GlobalShadows", nil)
 		end
 
 		if time_on then
-			lighting.ClockTime = math.clamp(Util.number("vis_time", 13), 0, 24)
+			put(lighting, "ClockTime", math.clamp(Util.number("vis_time", 13), 0, 24))
 		elseif state.time then
-			lighting.ClockTime = Overrides.saved.ClockTime
+			put(lighting, "ClockTime", nil)
 		end
 
 		if nopost ~= state.post then
@@ -3612,7 +3697,7 @@ do
 		local saved = Overrides.saved
 
 		set_effects(false)
-		set_atmosphere(nil)
+		set_atmosphere(false)
 
 		if Overrides.fov_base and workspace.CurrentCamera then
 			pcall(function()
@@ -3816,6 +3901,8 @@ function Frame.rebuild()
 	Scene.list = out
 end
 
+local draw_fault = ""
+
 function Frame.draw(camera)
 	local viewport = camera.ViewportSize
 	local center = viewport * 0.5
@@ -3829,13 +3916,14 @@ function Frame.draw(camera)
 
 		per_kind[ent.prefix] = count
 
-		local dist = Util.meters((origin - ent.position).Magnitude)
+		local dist = ent.position and Util.meters((origin - ent.position).Magnitude) or 0
 		local loot_filter = ent.prefix == "loot" and (
 			(Util.on("loot_hide_misc") and ent.kind == "misc")
 			or (Util.on("loot_only_weapon") and ent.kind ~= "weapon" and ent.kind ~= "ammo")
 		)
 		local wreck_filter = ent.prefix == "vehicle" and ent.destroyed == true and not Util.on("espsettings_wrecks")
-		local allowed = count <= Util.number(spec.prefix .. "_limit", 120)
+		local allowed = spec ~= nil
+			and count <= Util.number(spec.prefix .. "_limit", 120)
 			and dist <= Util.number(spec.prefix .. "_maxdistance", 1200)
 			and not loot_filter
 			and not wreck_filter
@@ -3843,7 +3931,12 @@ function Frame.draw(camera)
 		if allowed then
 			keep[ent.key] = true
 
-			Visual.draw(ent, camera, center, viewport)
+			local ok, err = pcall(Visual.draw, ent, camera, center, viewport)
+
+			if not ok and err ~= draw_fault then
+				draw_fault = err
+				print("leet.cheats: esp draw fault: " .. tostring(err))
+			end
 		end
 	end
 
