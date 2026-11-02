@@ -1,6 +1,6 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "1"
+local BUILD = "2"
 local LIB_BYTES = 147735
 
 print("leet.cheats: starter build " .. BUILD)
@@ -50,14 +50,16 @@ do
 	Env.closure = has("getrawmetatable") and has("setreadonly") and has("getnamecallmethod")
 	Env.check_caller = has("checkcaller")
 	Env.hui = has("gethui") or has("getplayergui")
+	Env.clipboard = has("setclipboard")
 
 	print(string.format(
-		"leet.cheats: drawing=%s highlight=%s mouse=%s namecall=%s hui=%s",
+		"leet.cheats: drawing=%s highlight=%s mouse=%s namecall=%s hui=%s clipboard=%s",
 		tostring(Env.drawing),
 		tostring(Env.highlight),
 		tostring(Env.mouse_rel),
 		tostring(Env.closure),
-		tostring(Env.hui)
+		tostring(Env.hui),
+		tostring(Env.clipboard)
 	))
 end
 
@@ -104,6 +106,16 @@ function Util.list(flag)
 	end
 
 	return { entry }
+end
+
+function Util.parts(flag, fallback)
+	local entry = Util.list(flag)
+
+	if #entry > 0 then
+		return entry
+	end
+
+	return fallback or { "Head" }
 end
 
 function Util.key_active(flag)
@@ -785,37 +797,364 @@ do
 end
 
 do
-	local info = settings_tab:section({ name = "recon" })
+	local configs = settings_tab:section({ name = "configuration system" })
+	local theming = settings_tab:section({ name = "theming system", side = "right" })
+	local session = settings_tab:section({ name = "session", side = "right" })
 	local about = settings_tab:section({ name = "about", side = "right" })
 
-	info:button({
+	theming:toggle({
+		name = "keybind list",
+		flag = "keybind_list",
+		default = false,
+		tooltip = "floating list of every bound key on the left edge",
+		callback = function(bool)
+			window.toggle_list(bool)
+		end,
+	})
+
+	theming:toggle({
+		name = "player list",
+		flag = "player_list",
+		default = false,
+		tooltip = "side panel with every player in the server",
+		callback = function(bool)
+			window.toggle_playerlist(bool)
+		end,
+	})
+
+	theming:toggle({
+		name = "watermark",
+		flag = "watermark",
+		default = true,
+		tooltip = "corner banner with fps and the modes that are live",
+	})
+
+	theming:toggle({
+		name = "keybind hints",
+		flag = "ui_hints",
+		default = false,
+		tooltip = "lists the combat modes that are active on the watermark",
+	})
+
+	window.toggle_watermark(false)
+
+	theming:keybind({
+		name = "ui bind",
+		flag = "ui_bind",
+		display = "menu",
+		default = Enum.KeyCode.End,
+		tooltip = "shows or hides the whole menu",
+		callback = function(bool)
+			window.set_menu_visibility(bool)
+		end,
+	})
+
+	theming:slider({
+		name = "colorpicker animation",
+		flag = "color_picker_anim_speed",
+		default = 2,
+		min = 0,
+		max = 5,
+		interval = 0.01,
+		tooltip = "speed of the pulse inside open colorpickers",
+	})
+
+	theming:colorpicker({
+		name = "accent color",
+		flag = "accent",
+		color = Color3.fromHex("#6464FF"),
+		tooltip = "retints the whole menu, saved with the config",
+		callback = function(color)
+			leet:update_theme("accent", color)
+		end,
+	})
+
+	local dir = leet.directory .. "/configs/"
+	local reset_config = ""
+
+	local function notify(text)
+		leet:notification({ text = text, time = 3 })
+	end
+
+	local function refresh_list()
+		if not pcall(leet.config_list_update, leet) then
+			notify("config list unreadable on this executor")
+		end
+	end
+
+	leet.config_holder = configs:dropdown({
+		name = "configs",
+		items = {},
+		flag = "config_name_list",
+		tooltip = "saved configs on disk, the buttons below act on the one picked here",
+	})
+
+	configs:textbox({
+		placeholder = "new config name",
+		flag = "config_name_text_box",
+		tooltip = "name create writes to, letters digits _ - . only",
+	})
+
+	local function chosen()
+		if not leet.has_files then
+			notify("executor has no file access")
+			return
+		end
+
+		local entry = flags["config_name_list"]
+		local name = type(entry) == "table" and entry[1] or entry
+
+		if type(name) ~= "string" or #name == 0 then
+			notify("select a config from the dropdown first")
+			return
+		end
+
+		return name
+	end
+
+	local function typed()
+		if not leet.has_files then
+			notify("executor has no file access")
+			return
+		end
+
+		local name = flags["config_name_text_box"]
+
+		if type(name) ~= "string" then
+			notify("type a config name first")
+			return
+		end
+
+		name = name:gsub("[^%w_%-%.]", "")
+
+		if #name == 0 or name == "." or name == ".." then
+			notify("type a config name first")
+			return
+		end
+
+		return name
+	end
+
+	configs:button({
+		name = "create",
+		tooltip = "writes a brand new cfg from the name in the box",
+		callback = function()
+			local name = typed()
+
+			if not name then
+				return
+			end
+
+			if pcall(writefile, dir .. name .. ".cfg", leet:get_config()) then
+				refresh_list()
+				notify("created " .. name)
+			else
+				notify("create failed")
+			end
+		end,
+	})
+
+	configs:button({
+		name = "delete",
+		tooltip = "removes the picked cfg after asking",
+		callback = function()
+			local name = chosen()
+
+			if not name then
+				return
+			end
+
+			leet:panel({
+				name = "delete " .. name .. " ?",
+				options = { "Yes", "No" },
+				callback = function(option)
+					if option ~= "Yes" then
+						return
+					end
+
+					if pcall(delfile, dir .. name .. ".cfg") then
+						refresh_list()
+						notify("deleted " .. name)
+					else
+						notify("delete failed")
+					end
+				end,
+			})
+		end,
+	})
+
+	configs:button({
+		name = "load",
+		tooltip = "applies the picked cfg to every flag right now",
+		callback = function()
+			local name = chosen()
+
+			if not name then
+				return
+			end
+
+			local ok, body = pcall(readfile, dir .. name .. ".cfg")
+
+			if ok and pcall(function()
+				leet:load_config(body)
+			end) then
+				notify("loaded " .. name)
+			else
+				notify("load failed")
+			end
+		end,
+	})
+
+	configs:button({
+		name = "save",
+		tooltip = "overwrites the picked cfg with the current flags",
+		callback = function()
+			local name = chosen()
+
+			if not name then
+				return
+			end
+
+			if pcall(writefile, dir .. name .. ".cfg", leet:get_config()) then
+				refresh_list()
+				notify("saved " .. name)
+			else
+				notify("save failed")
+			end
+		end,
+	})
+
+	configs:button({
+		name = "reload autoload",
+		tooltip = "reads the config this menu loads on boot again",
+		callback = function()
+			if leet:load_last_config() then
+				notify("reloaded " .. leet.autoload)
+			else
+				notify("no autoload cfg on disk yet")
+			end
+		end,
+	})
+
+	configs:button({
+		name = "reset to defaults",
+		tooltip = "puts every flag back the way the menu shipped",
+		callback = function()
+			if pcall(leet.load_config, leet, reset_config) then
+				notify("reset to defaults")
+			else
+				notify("reset failed")
+			end
+		end,
+	})
+
+	configs:button({
+		name = "unload menu",
+		tooltip = "saves the autoload config, kills the menu and every thread",
+		callback = function()
+			leet:unload()
+		end,
+	})
+
+	session:button({
 		name = "scan game",
+		tooltip = "prints remotes, camera props and team fields into the console",
 		callback = function()
 			Adapter.report()
 		end,
 	})
 
-	info:toggle({
-		name = "watermark",
-		flag = "ui_watermark",
-		default = true,
-		tooltip = "small fps banner in the corner",
+	session:button({
+		name = "copy jobid",
+		tooltip = "job id of this server instance onto the clipboard",
+		callback = function()
+			if Env.clipboard then
+				pcall(setclipboard, tostring(game.JobId))
+				notify("jobid copied")
+			else
+				notify("executor has no clipboard")
+			end
+		end,
 	})
 
-	info:toggle({
-		name = "keybind hints",
-		flag = "ui_hints",
-		default = false,
-		tooltip = "lists active combat modes on the watermark",
+	session:button({
+		name = "copy placeid",
+		tooltip = "place id of the game onto the clipboard",
+		callback = function()
+			if Env.clipboard then
+				pcall(setclipboard, tostring(game.PlaceId))
+				notify("placeid copied")
+			else
+				notify("executor has no clipboard")
+			end
+		end,
+	})
+
+	session:button({
+		name = "copy join script",
+		tooltip = "teleport snippet that lands back in this exact server",
+		callback = function()
+			if not Env.clipboard then
+				notify("executor has no clipboard")
+				return
+			end
+
+			local snippet = 'game:GetService("TeleportService"):TeleportToPlaceInstance('
+				.. game.PlaceId
+				.. ', "'
+				.. tostring(game.JobId)
+				.. '", game.Players.LocalPlayer)'
+
+			pcall(setclipboard, snippet)
+			notify("join script copied")
+		end,
+	})
+
+	session:button({
+		name = "rejoin",
+		tooltip = "leaves and comes straight back into this server",
+		callback = function()
+			local ok = pcall(function()
+				game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, lp)
+			end)
+
+			if not ok then
+				notify("rejoin failed, empty jobid?")
+			end
+		end,
+	})
+
+	settings_tab:hitpart_picker({
+		name = "multihitpart picker",
+		side = "left",
+		flag = "trigger_hitparts",
+		default = { "Head" },
+		multi = true,
+		type = "R15",
+		tooltip = "hitboxes the triggerbot is allowed to click through",
+	})
+
+	settings_tab:hitpart_picker({
+		name = "singlehitpart picker",
+		side = "right",
+		flag = "silent_hitpart",
+		default = { "Head" },
+		multi = false,
+		type = "R15",
+		tooltip = "the one hitbox silent aim redirects to",
 	})
 
 	about:label({
-		name = "adapter block at the top of the file is the only part that changes per game: team attribute, fire remote names, camera properties, world entities.",
+		name = "the adapter block near the top of the file is the only part that changes per game: team attribute, fire remote names, camera properties, world entities.",
 	})
 
 	about:label({
 		name = "every combat mode ships off. run scan game before touching the code.",
 	})
+
+	reset_config = leet:get_config()
+
+	refresh_list()
 end
 
 function Adapter.report()
@@ -1533,11 +1872,9 @@ do
 
 		Combat.silent_target = nil
 
-		local names = Util.list("aimbot_hitparts")
-
-		if #names == 0 then
-			names = { "Head" }
-		end
+		local names = Util.parts("aimbot_hitparts")
+		local silent_names = Util.parts("silent_hitpart", names)
+		local trigger_names = Util.parts("trigger_hitparts", names)
 
 		if Util.on("gun_norecoil") then
 			Adapter.zero(camera, "Recoil")
@@ -1550,7 +1887,7 @@ do
 		if Util.on("silent_enabled") then
 			local target = best_target(
 				Util.number("silent_fov", 320),
-				names,
+				silent_names,
 				not Util.on("silent_wallbang"),
 				0
 			)
@@ -1605,7 +1942,7 @@ do
 			local due = (os.clock() - Combat.last_click) >= interval
 
 			if want_trigger then
-				local target = best_target(Util.number("trigger_fov", 60), names, true, 0)
+				local target = best_target(Util.number("trigger_fov", 60), trigger_names, true, 0)
 
 				if target and due then
 					Combat.last_click = os.clock()
@@ -1744,7 +2081,7 @@ do
 	Watermark.label = label
 
 	function Watermark.tick()
-		Watermark.shell.Visible = Util.on("ui_watermark")
+		Watermark.shell.Visible = Util.on("watermark")
 
 		if not Watermark.shell.Visible then
 			return
@@ -1863,4 +2200,4 @@ leet:notification({
 
 visuals_tab.open_tab()
 
-print("leet.cheats: starter ready, run scan game in settings first")
+print("leet.cheats: starter ready, ui bind is [end], run scan game in settings first")
