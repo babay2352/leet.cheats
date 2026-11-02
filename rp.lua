@@ -1,12 +1,12 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "4"
+local BUILD = "5"
 local LIB_BYTES = 147735
 local SIGN_COOLDOWN = 3
 local SIGN_RESCAN = 20
 local JOIN_COOLDOWN = 1
 
-print("leet.cheats: rp build " .. BUILD .. " (price signs, no-deal gate)")
+print("leet.cheats: rp build " .. BUILD .. " (world labels only, stalls behind a toggle)")
 
 getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
 
@@ -1884,25 +1884,43 @@ do
 	local function gui_anchor(label)
 		local node = label.Parent
 
-		for _ = 1, 4 do
+		for _ = 1, 6 do
 			if node == nil then
 				return
 			end
 
-			local position = model_anchor(node)
+			local ok, collector = pcall(function()
+				return node:IsA("LayerCollector")
+			end)
 
-			if position == nil then
-				local ok, adornee = pcall(function()
+			if ok and collector then
+				return
+			end
+
+			local anchored
+
+			local ok3d, base = pcall(function()
+				return node:IsA("GuiBase3d")
+			end)
+
+			if ok3d and base then
+				local ok_ad, adornee = pcall(function()
 					return node.Adornee
 				end)
 
-				if ok and adornee ~= nil then
-					position = model_anchor(adornee)
+				if ok_ad and adornee ~= nil then
+					anchored = model_anchor(adornee)
 				end
-			end
 
-			if position ~= nil then
-				return position
+				if anchored ~= nil then
+					return anchored
+				end
+			else
+				anchored = model_anchor(node)
+
+				if anchored ~= nil then
+					return anchored
+				end
 			end
 
 			node = node.Parent
@@ -1954,6 +1972,30 @@ do
 					entry.fair = entry.fair or donor.fair
 					entry.reseller = entry.reseller or donor.reseller
 					donor.dup = true
+				end
+			end
+
+			if entry.reseller == true then
+				local gap = SIGN_GAP
+				local item
+
+				for _, other in next, found do
+					if other ~= entry and other.name ~= nil and other.reseller ~= true then
+						local away = (other.position - entry.position).Magnitude
+
+						if away < gap then
+							gap = away
+							item = other
+						end
+					end
+				end
+
+				if item ~= nil then
+					entry.name = item.name
+					entry.rarity = entry.rarity or item.rarity
+					entry.brand = entry.brand or item.brand
+					entry.fair = entry.fair or item.fair
+					entry.reseller = false
 				end
 			end
 
@@ -2128,15 +2170,23 @@ do
 		local census = { three_d = 0, gui = 0, junk = 0, objects = 0, labels = 0 }
 		Market.sign_census = census
 
-		local function spot(position)
-			return tostring(math.floor(position.X))
-				.. ":"
-				.. tostring(math.floor(position.Y))
-				.. ":"
-				.. tostring(math.floor(position.Z))
+		local seq = 0
+
+		local function uid_of(node)
+			local ok, full = pcall(function()
+				return node:GetFullName()
+			end)
+
+			if ok and type(full) == "string" then
+				return full
+			end
+
+			seq = seq + 1
+
+			return "node" .. seq
 		end
 
-		local function record(host, position, text, kind)
+		local function record(host, position, text, kind, uid)
 			text = clean_text(text)
 
 			if text == nil or string.len(text) < 2 then
@@ -2150,7 +2200,8 @@ do
 			local head, tail_number = split_text(text)
 			local entry = {
 				source = kind == "gui" and "gui" or "label",
-				key = (kind == "gui" and "gui:" or "label:") .. spot(position),
+				key = (kind == "gui" and "gui:" or "label:") .. uid,
+				uid = uid,
 				text = text,
 				position = position,
 				price = price_in(text) or tail_number,
@@ -2163,6 +2214,11 @@ do
 				entry.name = head
 			elseif entry.price == nil then
 				entry.name = text
+			end
+
+			if found[entry.key] ~= nil then
+				seq = seq + 1
+				entry.key = entry.key .. "#" .. seq
 			end
 
 			found[entry.key] = entry
@@ -2188,7 +2244,7 @@ do
 				local position = host ~= nil and model_anchor(host) or nil
 
 				if text ~= nil and position ~= nil then
-					record(host, position, text, "three_d")
+					record(host, position, text, "three_d", uid_of(instance))
 				else
 					census.junk = census.junk + 1
 				end
@@ -2197,16 +2253,16 @@ do
 				local text = Util.clip(clean_text(instance.Text) or "", 96)
 
 				if #text >= 2 then
-					local interesting = price_in(text) ~= nil
+					local wanted = price_in(text) ~= nil
 						or split_text(text) ~= nil
 						or Catalog.by_name[string.lower(text)] ~= nil
 						or push_named(text)
 
-					local position = interesting and gui_anchor(instance) or nil
+					local position = wanted and gui_anchor(instance) or nil
 
 					if position ~= nil then
-						record(instance.Parent, position, text, "gui")
-					elseif interesting then
+						record(instance.Parent, position, text, "gui", uid_of(instance))
+					elseif wanted then
 						census.junk = census.junk + 1
 					end
 				end
@@ -2358,9 +2414,13 @@ do
 		end
 
 		if Util.on("market_signs") then
+			local stalls = Util.on("market_stalls")
+
 			for _, entry in next, Market.tags do
 				if entry.name ~= nil and entry.price ~= nil and entry.dup ~= true and entry.useful == true then
-					push_candidate(out, entry, origin, studs, min_rank, deals_only)
+					if entry.reseller ~= true or stalls then
+						push_candidate(out, entry, origin, studs, min_rank, deals_only)
+					end
 				end
 			end
 		end
@@ -2674,6 +2734,13 @@ do
 	})
 
 	main:toggle({
+		name = "player stalls",
+		flag = "market_stalls",
+		default = false,
+		tooltip = "also highlight tables where players resell, tagged with their nickname",
+	})
+
+	main:toggle({
 		name = "black market van",
 		flag = "market_van",
 		default = true,
@@ -2917,11 +2984,12 @@ do
 			))
 
 			print(string.format(
-				"leet.cheats gates: esp=%s shop=%s loose=%s signs=%s deals=%s lines=%s min_rarity=%s studs=%s limit=%s drawn=%d",
+				"leet.cheats gates: esp=%s shop=%s loose=%s signs=%s stalls=%s deals=%s lines=%s min_rarity=%s studs=%s limit=%s drawn=%d",
 				tostring(Util.on("market_esp")),
 				tostring(Util.on("market_shop")),
 				tostring(Util.on("market_loose")),
 				tostring(Util.on("market_signs")),
+				tostring(Util.on("market_stalls")),
 				tostring(Util.on("market_deals")),
 				tostring(Util.on("market_tags")),
 				tostring(Util.pick("market_rarity", "?")),
