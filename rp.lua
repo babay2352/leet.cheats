@@ -1,12 +1,12 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "6"
+local BUILD = "7"
 local LIB_BYTES = 147735
 local SIGN_COOLDOWN = 3
 local SIGN_RESCAN = 20
 local JOIN_COOLDOWN = 1
 
-print("leet.cheats: rp build " .. BUILD .. " (shop item models are the anchor)")
+print("leet.cheats: rp build " .. BUILD .. " (pushes bind items by slotRef/visualRef)")
 
 getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
 
@@ -510,8 +510,8 @@ local Market = {
 	zones = {},
 	signs_dirty = false,
 	join_dirty = false,
-	sign_census = { three_d = 0, gui = 0, junk = 0 },
-	stats = { slots = 0, pushed = 0, pinned = 0, tags = 0, van = 0, listings = 0, fair = 0, items = 0 },
+	sign_census = { three_d = 0, gui = 0, junk = 0, objects = 0, labels = 0, skipped = 0 },
+	stats = { slots = 0, pushed = 0, pinned = 0, tags = 0, van = 0, listings = 0, fair = 0, items = 0, exact = 0 },
 }
 
 do
@@ -526,10 +526,6 @@ do
 					if part:IsA("BasePart") and #parts < 96 then
 						parts[#parts + 1] = part
 					end
-				end
-
-				if #parts == 0 then
-					return host:GetPivot().Position, Vector3.new(2, 2, 2)
 				end
 			else
 				local part = host:FindFirstChildWhichIsA("BasePart", true)
@@ -849,6 +845,29 @@ do
 		return false
 	end
 
+	local function slot_host(instance)
+		local ok, host = pcall(function()
+			if instance:IsA("BasePart") then
+				local parent = instance.Parent
+
+				if string.match(instance.Name, "^Slot_?%d+$") ~= nil then
+					return instance
+				end
+
+				if parent ~= nil
+					and (parent.Name == "ItemSlots" or parent.Name == "AccessorySlots") then
+					return instance
+				end
+			end
+
+			return instance.Parent
+		end)
+
+		if ok then
+			return host
+		end
+	end
+
 	function Market.rebuild()
 		local found = {}
 		local roots = {}
@@ -874,7 +893,7 @@ do
 					end
 				end
 			elseif looks_like_slot(instance) then
-				local host = instance.Parent
+				local host = slot_host(instance)
 
 				if host and found[host] == nil then
 					local entry = Market.read_host(host)
@@ -991,9 +1010,13 @@ do
 	function Market.watch()
 		local ok, added = pcall(function()
 			return workspace.DescendantAdded:Connect(function(instance)
-				if looks_like_slot(instance) and instance.Parent then
-					Market.queued[instance.Parent] = true
-					Market.dirty = true
+				if looks_like_slot(instance) then
+					local host = slot_host(instance)
+
+					if host ~= nil then
+						Market.queued[host] = true
+						Market.dirty = true
+					end
 				end
 
 				if Market.is_visual_root(instance) then
@@ -1051,6 +1074,12 @@ do
 
 		Market.apply_pushes(entry)
 	end
+
+	Market.part_frame = part_frame
+	Market.part_anchor = part_anchor
+	Market.full_name = full_name
+	Market.absorb_child = absorb_child
+	Market.absorb_attributes = absorb_attributes
 end
 
 do
@@ -1146,6 +1175,12 @@ do
 		"visual",
 		"model",
 		"anchor",
+		"slotRef",
+		"SlotRef",
+		"visualRef",
+		"VisualRef",
+		"itemRef",
+		"rootRef",
 	}
 
 	local function field(raw, keys)
@@ -1185,6 +1220,12 @@ do
 		return slot, shop, id
 	end
 
+	local function instance_ref(value)
+		if value ~= nil and typeof(value) == "Instance" then
+			return value
+		end
+	end
+
 	local function value_position(value)
 		if value == nil then
 			return
@@ -1198,7 +1239,7 @@ do
 			return value.Position
 		end
 
-		if typeof(value) ~= "userdata" then
+		if typeof(value) ~= "Instance" then
 			return
 		end
 
@@ -1208,6 +1249,12 @@ do
 			end
 
 			if value:IsA("Model") then
+				local anchor = Market.part_frame(value)
+
+				if anchor ~= nil then
+					return anchor
+				end
+
 				return value:GetPivot().Position
 			end
 
@@ -1229,6 +1276,12 @@ do
 				end
 
 				if inner:IsA("Model") then
+					local anchor = Market.part_frame(inner)
+
+					if anchor ~= nil then
+						return anchor
+					end
+
 					return inner:GetPivot().Position
 				end
 			end
@@ -1418,6 +1471,8 @@ do
 				shop = type(shop) == "string" and shop or nil,
 				slot_index = slot_index,
 				position = position,
+				slot_ref = instance_ref(raw.slotRef or raw.SlotRef),
+				visual_ref = instance_ref(raw.visualRef or raw.VisualRef or raw.itemRef or raw.rootRef),
 				name = type(raw_name) == "string" and raw_name or nil,
 				price = tonumber(raw_price) or (type(raw_price) == "string" and Util.stripped(raw_price) or nil),
 				rarity = type(raw_rarity) == "string" and raw_rarity or nil,
@@ -1433,6 +1488,15 @@ do
 			if record then
 				Catalog.merge(entry, record)
 				entry.catalogued = true
+			end
+
+			if (entry.slot_ref ~= nil or entry.visual_ref ~= nil) and Market.ref_logged ~= true then
+				Market.ref_logged = true
+
+				print("leet.cheats: pushes carry live refs, first one: "
+					.. tostring(entry.name)
+					.. " at "
+					.. tostring(entry.position))
 			end
 
 			if entry.name or entry.price or entry.rarity then
@@ -1596,6 +1660,12 @@ do
 end
 
 do
+	local part_frame = Market.part_frame
+	local part_anchor = Market.part_anchor
+	local full_name = Market.full_name
+	local absorb_child = Market.absorb_child
+	local absorb_attributes = Market.absorb_attributes
+
 	function Market.admin_call(verb, arguments)
 		local ok, remote = pcall(function()
 			local group = replicated:FindFirstChild("TsumRemotes")
@@ -2099,6 +2169,80 @@ do
 	function Market.bind_items()
 		local by_price = Market.push_by_price()
 
+		local function entry_for(store, value, steps)
+			if value == nil or typeof(value) ~= "Instance" then
+				return
+			end
+
+			local node = value
+
+			for _ = 1, steps do
+				local entry = store[node]
+
+				if entry ~= nil then
+					return entry
+				end
+
+				local ok, parent = pcall(function()
+					return node.Parent
+				end)
+
+				if not ok or parent == nil then
+					return
+				end
+
+				node = parent
+			end
+		end
+
+		local function pour(target, pushed)
+			if target == nil then
+				return
+			end
+
+			target.price = pushed.price or target.price
+			target.rarity = pushed.rarity or target.rarity
+			target.name = target.name or pushed.name
+			target.brand = target.brand or pushed.brand
+			target.fair = target.fair or pushed.fair
+			target.kind = target.kind or pushed.kind
+			target.id = target.id or pushed.id
+			target.catalogued = target.catalogued or pushed.catalogued
+			target.bare = false
+		end
+
+		local exact = 0
+
+		for _, pushed in next, Market.pushed do
+			if pushed.slot_ref ~= nil or pushed.visual_ref ~= nil then
+				local slot = entry_for(Market.slots, pushed.slot_ref, 2)
+					or entry_for(Market.slots, pushed.visual_ref, 2)
+
+				local root = entry_for(Market.roots, pushed.visual_ref, 1)
+					or (slot ~= nil and slot.visual ~= nil and Market.roots[slot.visual])
+					or (slot ~= nil and slot.host ~= nil and Market.roots[slot.host])
+
+				pour(slot, pushed)
+				pour(root, pushed)
+
+				if root ~= nil then
+					exact = exact + 1
+					root.exact = true
+
+					if root.source == "item" then
+						root.source = "item+push"
+					end
+
+					if slot ~= nil then
+						slot.item_key = slot.item_key or root.key
+						root.slot_key = root.slot_key or slot.slot_key
+					end
+				end
+			end
+		end
+
+		Market.stats.exact = exact
+
 		for _, slot in next, Market.slots do
 			if slot.visual ~= nil then
 				local root = Market.roots[slot.visual]
@@ -2404,7 +2548,14 @@ do
 		end
 
 		Market.stats.fair = known
-		Market.bind_items()
+
+		local ok_bind, bind_error = pcall(Market.bind_items)
+
+		if not ok_bind and Market.bind_error_shown ~= true then
+			Market.bind_error_shown = true
+			print("leet.cheats: item bind failed: " .. tostring(bind_error))
+		end
+
 		Market.join_dirty = false
 	end
 
@@ -3397,7 +3548,7 @@ do
 			end
 
 			print(string.format(
-				"leet.cheats report: catalogue=%d numbers=%d names=%d slots=%d filled=%d items=%d item_named=%d pushed=%d pinned=%d signs=%d van=%d listings=%d taps=%d bands=%.2f-%.2f",
+				"leet.cheats report: catalogue=%d numbers=%d names=%d slots=%d filled=%d items=%d item_named=%d exact=%d pushed=%d pinned=%d signs=%d van=%d listings=%d taps=%d bands=%.2f-%.2f",
 				#Catalog.records,
 				Util.count_keys(Catalog.by_number),
 				Util.count_keys(Catalog.by_name),
@@ -3405,6 +3556,7 @@ do
 				filled,
 				Market.stats.items,
 				item_named,
+				Market.stats.exact,
 				Market.stats.pushed,
 				pinned,
 				Market.stats.tags,
@@ -3449,11 +3601,12 @@ do
 			end
 
 			print(string.format(
-				"leet.cheats draw: engine=%s named_slots=%d items=%d item_named=%d signs=%d fair=%d passed=%d projected=%d records=%d",
+				"leet.cheats draw: engine=%s named_slots=%d items=%d item_named=%d exact=%d signs=%d fair=%d passed=%d projected=%d records=%d",
 				tostring(Env.drawing),
 				named,
 				Market.stats.items,
 				item_named,
+				Market.stats.exact,
 				Market.stats.tags,
 				Market.stats.fair,
 				#passed,
@@ -3658,9 +3811,19 @@ task.spawn(function()
 
 	print(string.format("leet.cheats: catalogue built %d items from %d configs", total, Util.count_keys(Catalog.loaded)))
 
-	Market.rebuild()
+	local ok_rebuild, rebuild_error = pcall(Market.rebuild)
 
-	local signs = Market.scan_tags()
+	if not ok_rebuild then
+		print("leet.cheats: rebuild failed: " .. tostring(rebuild_error))
+	end
+
+	local ok_scan, signs = pcall(Market.scan_tags)
+
+	if not ok_scan then
+		print("leet.cheats: sign scan failed: " .. tostring(signs))
+		signs = 0
+	end
+
 	local lit = 0
 	local named = 0
 
@@ -3687,8 +3850,8 @@ task.spawn(function()
 		Market.sign_census.labels
 	))
 
-	Market.arm_taps()
-	Market.watch()
+	pcall(Market.arm_taps)
+	pcall(Market.watch)
 
 	pcall(Market.probe_van)
 
