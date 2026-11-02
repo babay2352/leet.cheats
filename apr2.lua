@@ -1,6 +1,6 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "4"
+local BUILD = "5"
 local LIB_BYTES = 147735
 
 print("leet.cheats: apr2 build " .. BUILD)
@@ -48,6 +48,22 @@ do
 		Instance.new("Highlight"):Destroy()
 	end)
 
+	Env.identity = 0
+
+	for _, level in next, { 3, 2 } do
+		local ok = pcall(function()
+			setthreadidentity(level)
+		end)
+
+		if ok then
+			Env.identity = level
+
+			break
+		end
+	end
+
+	local named, executor = pcall(identifyexecutor)
+	Env.executor = named and tostring(executor) or "unknown"
 	Env.mouse_rel = has("mousemoverel")
 	Env.click = has("mouse1click")
 	Env.clipboard = has("setclipboard")
@@ -55,7 +71,9 @@ do
 	Env.server = run_service:IsServer()
 
 	print(string.format(
-		"leet.cheats: drawing=%s highlight=%s mouse=%s click=%s hui=%s",
+		"leet.cheats: executor=%s identity=%d drawing=%s highlight=%s mouse=%s click=%s hui=%s",
+		Env.executor,
+		Env.identity,
 		tostring(Env.drawing),
 		tostring(Env.highlight),
 		tostring(Env.mouse_rel),
@@ -2568,23 +2586,70 @@ do
 	end
 end
 
-local Visual = { records = {}, host = nil, chams = {} }
+local Visual = {
+	records = {},
+	host = nil,
+	chams = {},
+	cham_busy = {},
+	pool = {},
+	kind = setmetatable({}, { __mode = "k" }),
+	busy = setmetatable({}, { __mode = "k" }),
+}
 
 do
 	if not Env.drawing then
 		print("leet.cheats: Drawing unavailable, esp renderer stays off")
 	end
 
+	local POOL_SIZE = { Line = 512, Square = 192, Circle = 96, Text = 256 }
+
 	local function new_node(class)
 		if not Env.drawing then
 			return
 		end
 
-		local ok, node = pcall(function()
-			return Drawing.new(class)
-		end)
+		local stack = Visual.pool[class]
+		local node = stack and table.remove(stack)
 
-		return ok and node or nil
+		if node then
+			Visual.busy[node] = true
+
+			return node
+		end
+
+		local ok, created = pcall(Drawing.new, class)
+
+		if not ok or not created then
+			return
+		end
+
+		Visual.kind[created] = class
+		Visual.busy[created] = true
+
+		return created
+	end
+
+	function Visual.init_pool()
+		for class, count in next, POOL_SIZE do
+			local stack = {}
+
+			for _ = 1, count do
+				local node = new_node(class)
+
+				if node then
+					pcall(function()
+						node.Visible = false
+					end)
+
+					Visual.busy[node] = nil
+					stack[#stack + 1] = node
+				end
+			end
+
+			Visual.pool[class] = stack
+		end
+
+		return #Visual.pool.Line > 0
 	end
 
 	Visual.new = new_node
@@ -2609,11 +2674,34 @@ do
 	end
 
 	local function kill(node)
-		if node then
-			pcall(function()
-				node:Remove()
-			end)
+		if not node then
+			return
 		end
+
+		pcall(function()
+			node.Visible = false
+		end)
+
+		local class = Visual.kind[node]
+		local stack = class and Visual.pool[class]
+
+		if stack then
+			if not Visual.busy[node] then
+				return
+			end
+
+			Visual.busy[node] = nil
+			stack[#stack + 1] = node
+
+			return
+		end
+
+		Visual.kind[node] = nil
+		Visual.busy[node] = nil
+
+		pcall(function()
+			node:Remove()
+		end)
 	end
 
 	Visual.kill = kill
@@ -2627,12 +2715,8 @@ do
 			rec.chams = nil
 		end
 
-		for key, value in next, rec do
-			if typeof(value) == "Instance" then
-				pcall(function()
-					value:Destroy()
-				end)
-			elseif type(value) == "table" then
+		for _, value in next, rec do
+			if type(value) == "table" then
 				for _, child in next, value do
 					kill(child)
 				end
@@ -2647,13 +2731,15 @@ do
 	end
 
 	function Visual.acquire()
-		for _, node in next, Visual.chams do
-			if node.Parent == nil then
+		for index, node in next, Visual.chams do
+			if not Visual.cham_busy[index] then
 				local ok = pcall(function()
 					node.Parent = Visual.host
 				end)
 
 				if ok then
+					Visual.cham_busy[index] = true
+
 					return node
 				end
 			end
@@ -2666,6 +2752,14 @@ do
 			node.Adornee = nil
 			node.Parent = nil
 		end)
+
+		for index, other in next, Visual.chams do
+			if other == node then
+				Visual.cham_busy[index] = nil
+
+				break
+			end
+		end
 	end
 
 	function Visual.init_chams()
@@ -3128,6 +3222,20 @@ do
 
 		Visual.crosshair = {}
 
+		for class, stack in next, Visual.pool do
+			for index, node in next, stack do
+				Visual.kind[node] = nil
+				Visual.busy[node] = nil
+				stack[index] = nil
+
+				pcall(function()
+					node:Remove()
+				end)
+			end
+
+			Visual.pool[class] = {}
+		end
+
 		if Visual.host then
 			pcall(function()
 				Visual.host:Destroy()
@@ -3137,6 +3245,7 @@ do
 		end
 
 		Visual.chams = {}
+		Visual.cham_busy = {}
 	end
 
 	Visual.crosshair = {}
@@ -3228,6 +3337,10 @@ do
 				end
 			end
 		end
+	end
+
+	if not Visual.init_pool() then
+		print("leet.cheats: drawing pool came up empty, esp will not render")
 	end
 
 	Env.highlight = Visual.init_chams()
@@ -3864,7 +3977,7 @@ do
 	end
 end
 
-local Frame = { clock = 0 }
+local Frame = {}
 
 function Frame.rebuild()
 	local out = {}
@@ -3931,11 +4044,16 @@ function Frame.draw(camera)
 		if allowed then
 			keep[ent.key] = true
 
-			local ok, err = pcall(Visual.draw, ent, camera, center, viewport)
+			local ok, err = xpcall(Visual.draw, debug.traceback, ent, camera, center, viewport)
 
-			if not ok and err ~= draw_fault then
-				draw_fault = err
-				print("leet.cheats: esp draw fault: " .. tostring(err))
+			if not ok then
+				local text = tostring(err)
+				local head = text:match("^(.-)\n") or text
+
+				if head ~= draw_fault then
+					draw_fault = head
+					print("leet.cheats: esp draw fault: " .. text)
+				end
 			end
 		end
 	end
@@ -3949,15 +4067,18 @@ local cleaned = false
 local last_fault = ""
 
 local function guarded(fn)
-	local ok, err = pcall(fn)
+	local ok, err = xpcall(fn, debug.traceback)
 
 	if ok then
 		return
 	end
 
-	if err ~= last_fault then
-		last_fault = err
-		print("leet.cheats: " .. tostring(err))
+	local text = tostring(err)
+	local head = text:match("^(.-)\n") or text
+
+	if head ~= last_fault then
+		last_fault = head
+		print("leet.cheats: " .. text)
 	end
 end
 
@@ -3976,22 +4097,23 @@ local function teardown()
 	print("leet.cheats: apr2 unloaded")
 end
 
-leet:connection(run_service.RenderStepped, function(dt)
-	if leet.dead then
-		teardown()
-		return
-	end
+local frame_clock = os.clock()
+local scan_clock = 0
 
+local function tick_frame()
 	local camera = workspace.CurrentCamera
 
 	if not camera then
 		return
 	end
 
-	Frame.clock = Frame.clock + dt
+	local now = os.clock()
+	local dt = math.min(0.25, now - frame_clock)
 
-	if Frame.clock >= 0.1 then
-		Frame.clock = 0
+	frame_clock = now
+
+	if now - scan_clock >= 0.1 then
+		scan_clock = now
 		guarded(Frame.rebuild)
 	end
 
@@ -4001,29 +4123,53 @@ leet:connection(run_service.RenderStepped, function(dt)
 	guarded(Legit.frame)
 	guarded(Watermark.tick)
 
-	if Weapon.enabled_now() and os.clock() - Weapon.last > 0.4 then
-		Weapon.last = os.clock()
+	if Weapon.enabled_now() and now - Weapon.last > 0.4 then
+		Weapon.last = now
 		guarded(Weapon.sweep)
 	end
 
-	if os.clock() - (Overrides.applied_clock or 0) > 0.2 then
-		Overrides.applied_clock = os.clock()
+	if now - (Overrides.applied_clock or 0) > 0.2 then
+		Overrides.applied_clock = now
 		guarded(Overrides.apply)
 	end
 
 	guarded(function()
 		Overrides.camera(camera, dt)
 	end)
-end)
+end
+
+local function loop()
+	while not leet.dead do
+		guarded(tick_frame)
+		task.wait()
+	end
+
+	teardown()
+end
+
+if type(task) == "table" and type(task.spawn) == "function" then
+	task.spawn(loop)
+else
+	leet:connection(run_service.RenderStepped, function()
+		if leet.dead then
+			teardown()
+
+			return
+		end
+
+		guarded(tick_frame)
+	end)
+end
 
 leet:connection(players.PlayerRemoving, function(player)
-	local key = "p_" .. player.Name
-	local rec = Visual.records[key]
+	guarded(function()
+		local rec = Visual.records["p_" .. player.Name]
 
-	if rec then
-		Visual.free(rec)
-		Visual.records[key] = nil
-	end
+		if rec then
+			Visual.free(rec)
+			Visual.records["p_" .. player.Name] = nil
+		end
+	end)
 end)
 
 leet.autoload = "ar2"
