@@ -1,12 +1,12 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "5"
+local BUILD = "6"
 local LIB_BYTES = 147735
 local SIGN_COOLDOWN = 3
 local SIGN_RESCAN = 20
 local JOIN_COOLDOWN = 1
 
-print("leet.cheats: rp build " .. BUILD .. " (world labels only, stalls behind a toggle)")
+print("leet.cheats: rp build " .. BUILD .. " (shop item models are the anchor)")
 
 getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
 
@@ -496,6 +496,7 @@ end
 
 local Market = {
 	slots = {},
+	roots = {},
 	pushed = {},
 	tags = {},
 	van = {},
@@ -504,35 +505,89 @@ local Market = {
 	connections = {},
 	dirty = true,
 	queued = {},
+	queued_roots = {},
 	sketched = {},
 	zones = {},
 	signs_dirty = false,
 	join_dirty = false,
 	sign_census = { three_d = 0, gui = 0, junk = 0 },
-	stats = { slots = 0, pushed = 0, pinned = 0, tags = 0, van = 0, listings = 0, fair = 0 },
+	stats = { slots = 0, pushed = 0, pinned = 0, tags = 0, van = 0, listings = 0, fair = 0, items = 0 },
 }
 
 do
-	local function position_of(host)
-		local ok, position = pcall(function()
+	local function part_frame(host)
+		local ok, position, size = pcall(function()
+			local parts = {}
+
 			if host:IsA("BasePart") then
-				return host.Position
+				parts[1] = host
+			elseif host:IsA("Model") then
+				for _, part in next, host:GetDescendants() do
+					if part:IsA("BasePart") and #parts < 96 then
+						parts[#parts + 1] = part
+					end
+				end
+
+				if #parts == 0 then
+					return host:GetPivot().Position, Vector3.new(2, 2, 2)
+				end
+			else
+				local part = host:FindFirstChildWhichIsA("BasePart", true)
+
+				if part ~= nil then
+					parts[1] = part
+				end
 			end
 
-			if host:IsA("Model") then
-				return host:GetPivot().Position
+			if #parts == 0 then
+				return
 			end
 
-			local part = host:FindFirstChildWhichIsA("BasePart", true)
+			local sum = Vector3.new(0, 0, 0)
 
-			if part then
-				return part.Position
+			for _, part in next, parts do
+				sum = sum + part.Position
 			end
+
+			local center = sum / #parts
+			local reach = Vector3.new(1, 1, 1)
+
+			for _, part in next, parts do
+				local offset = part.Position - center + part.Size * 0.5
+
+				reach = Vector3.new(
+					math.max(reach.X, math.abs(offset.X)),
+					math.max(reach.Y, math.abs(offset.Y)),
+					math.max(reach.Z, math.abs(offset.Z))
+				)
+			end
+
+			return center, reach * 2
 		end)
 
 		if ok then
+			return position, size
+		end
+	end
+
+	local function part_anchor(host)
+		local position = part_frame(host)
+
+		if position ~= nil then
 			return position
 		end
+
+		local ok, pivot = pcall(function()
+			return host:GetPivot().Position
+		end)
+
+		if ok then
+			return pivot
+		end
+	end
+
+	local function position_of(host)
+		return part_anchor(host)
 	end
 
 	local function full_name(host)
@@ -796,7 +851,9 @@ do
 
 	function Market.rebuild()
 		local found = {}
+		local roots = {}
 		local total = 0
+		local items = 0
 
 		local ok, all = pcall(function()
 			return workspace:GetDescendants()
@@ -807,7 +864,16 @@ do
 		end
 
 		for _, instance in next, all do
-			if looks_like_slot(instance) then
+			if Market.is_visual_root(instance) then
+				if roots[instance] == nil then
+					local entry = Market.read_root(instance)
+
+					if entry then
+						roots[instance] = entry
+						items = items + 1
+					end
+				end
+			elseif looks_like_slot(instance) then
 				local host = instance.Parent
 
 				if host and found[host] == nil then
@@ -822,16 +888,16 @@ do
 			end
 		end
 
+		Market.roots = roots
 		Market.slots = found
 		Market.stats.slots = total
+		Market.stats.items = items
 		Market.replay_pushes()
-
-		if Market.stats.tags > 0 then
-			Market.adopt_tags()
-		end
+		Market.adopt_tags()
 
 		Market.dirty = false
 		table.clear(Market.queued)
+		table.clear(Market.queued_roots)
 
 		return total
 	end
@@ -899,9 +965,25 @@ do
 		table.clear(Market.queued)
 		Market.stats.slots = total
 
-		if Market.stats.tags > 0 then
-			Market.adopt_tags()
+		for host in next, Market.queued_roots do
+			local entry = Market.read_root(host)
+
+			if entry then
+				Market.roots[host] = entry
+			end
 		end
+
+		table.clear(Market.queued_roots)
+
+		for host in next, Market.roots do
+			if host.Parent == nil then
+				Market.roots[host] = nil
+			end
+		end
+
+		Market.stats.items = Util.count_keys(Market.roots)
+
+		Market.adopt_tags()
 
 		Market.dirty = false
 	end
@@ -911,6 +993,11 @@ do
 			return workspace.DescendantAdded:Connect(function(instance)
 				if looks_like_slot(instance) and instance.Parent then
 					Market.queued[instance.Parent] = true
+					Market.dirty = true
+				end
+
+				if Market.is_visual_root(instance) then
+					Market.queued_roots[instance] = true
 					Market.dirty = true
 				end
 
@@ -936,6 +1023,11 @@ do
 				if Market.slots[instance] then
 					Market.slots[instance] = nil
 					Market.stats.slots = Util.count_keys(Market.slots)
+				end
+
+				if Market.roots[instance] ~= nil then
+					Market.roots[instance] = nil
+					Market.stats.items = Util.count_keys(Market.roots)
 				end
 			end)
 		end)
@@ -1734,6 +1826,7 @@ do
 	local PRICE_MARKS = { "₽", "руб", "P ", "₽", "$" }
 	local SIGN_GAP = 10
 	local SIGN_STUDS = 9
+	local ITEM_GAP = 16
 
 	local function json_text(raw)
 		if type(raw) ~= "string" then
@@ -1860,25 +1953,7 @@ do
 	end
 
 	local function model_anchor(host)
-		local ok, position = pcall(function()
-			if host:IsA("Model") then
-				return host:GetPivot().Position
-			end
-
-			if host:IsA("BasePart") then
-				return host.Position
-			end
-
-			local part = host:FindFirstChildWhichIsA("BasePart", true)
-
-			if part ~= nil then
-				return part.Position
-			end
-		end)
-
-		if ok then
-			return position
-		end
+		return part_anchor(host)
 	end
 
 	local function gui_anchor(label)
@@ -1925,6 +2000,210 @@ do
 
 			node = node.Parent
 		end
+	end
+
+	local CollectionService = game:GetService("CollectionService")
+
+	local function inside_tree(model, node)
+		local probe = node
+
+		for _ = 1, 10 do
+			if probe == nil then
+				break
+			end
+
+			if probe == model then
+				return true
+			end
+
+			probe = probe.Parent
+		end
+
+		return false
+	end
+
+	function Market.is_visual_root(instance)
+		local ok, result = pcall(function()
+			if not instance:IsA("Model") then
+				return false
+			end
+
+			if string.match(instance.Name, "^M_%d+$") == nil then
+				return false
+			end
+
+			if CollectionService:HasTag(instance, "__ShopRotatingItem") then
+				return true
+			end
+
+			if instance:GetAttributes()["__ShopVisualRoot"] == true then
+				return true
+			end
+
+			return shop_of(instance) ~= nil
+		end)
+
+		if ok then
+			return result == true
+		end
+
+		return false
+	end
+
+	function Market.read_root(model)
+		local position, size = part_frame(model)
+
+		if position == nil then
+			return
+		end
+
+		local entry = {
+			source = "item",
+			item = true,
+			host = model,
+			key = "item:" .. full_name(model),
+			position = position,
+			size = size,
+			zone = zone_of(model),
+			shop = shop_of(model),
+			id = tonumber(string.match(model.Name, "^M_(%d+)$")),
+		}
+
+		absorb_attributes(entry, model)
+
+		local ok, children = pcall(function()
+			return model:GetChildren()
+		end)
+
+		if ok then
+			for _, child in next, children do
+				absorb_child(entry, child)
+				absorb_attributes(entry, child)
+			end
+		end
+
+		local record = Catalog.find(entry.id, entry.name, nil)
+
+		if record ~= nil then
+			Catalog.merge(entry, record)
+			entry.catalogued = true
+		end
+
+		Market.apply_pushes(entry)
+
+		entry.bare = (entry.price == nil and entry.rarity == nil and entry.name == nil)
+
+		return entry
+	end
+
+	function Market.bind_items()
+		local by_price = Market.push_by_price()
+
+		for _, slot in next, Market.slots do
+			if slot.visual ~= nil then
+				local root = Market.roots[slot.visual]
+
+				if root ~= nil then
+					root.name = root.name or slot.name
+					root.price = root.price or slot.price
+					root.rarity = root.rarity or slot.rarity
+					root.brand = root.brand or slot.brand
+					root.fair = root.fair or slot.fair
+					root.kind = root.kind or slot.kind
+					root.catalogued = root.catalogued or slot.catalogued
+					root.slot_key = root.slot_key or slot.slot_key
+					slot.item_key = root.key
+				end
+			end
+		end
+
+		for _, root in next, Market.roots do
+			local named, priced
+			local name_gap, price_gap = ITEM_GAP, ITEM_GAP
+
+			for _, tag in next, Market.tags do
+				if tag.reseller ~= true and tag.position ~= nil then
+					local away = (tag.position - root.position).Magnitude
+
+					if away < ITEM_GAP then
+						if inside_tree(root.host, tag.host) then
+							away = 0
+						end
+
+						if tag.name ~= nil and away < name_gap then
+							name_gap = away
+							named = tag
+						end
+
+						if tag.price ~= nil and away < price_gap then
+							price_gap = away
+							priced = tag
+						end
+					end
+				end
+			end
+
+			if named ~= nil then
+				root.rarity = root.rarity or named.rarity
+				root.brand = root.brand or named.brand
+				root.fair = root.fair or named.fair
+
+				if root.name == nil then
+					root.name = named.name
+					named.dup = true
+				elseif named.price == nil and root.price ~= nil then
+					named.dup = true
+				end
+			end
+
+			if priced ~= nil then
+				if root.price == nil then
+					root.price = priced.price
+					priced.dup = true
+				elseif priced.price == root.price then
+					priced.dup = true
+				end
+			end
+
+			if root.name ~= nil then
+				if root.catalogued ~= true then
+					local record = Catalog.find(nil, root.name, nil)
+
+					if record ~= nil then
+						Catalog.merge(root, record)
+						root.catalogued = true
+					end
+				end
+
+				for _, pushed in next, Market.pushed do
+					if pushed.name ~= nil and string.lower(pushed.name) == string.lower(root.name) then
+						root.price = root.price or pushed.price
+						root.rarity = root.rarity or pushed.rarity
+						root.brand = root.brand or pushed.brand
+						root.fair = root.fair or pushed.fair
+						root.source = "item+push"
+
+						break
+					end
+				end
+			elseif root.price ~= nil then
+				local twin = by_price[root.price]
+
+				if type(twin) == "table" then
+					root.name = twin.name
+					root.rarity = root.rarity or twin.rarity
+					root.brand = root.brand or twin.brand
+					root.fair = root.fair or twin.fair
+					root.catalogued = root.catalogued or twin.catalogued
+					root.source = "item+pricetag"
+				end
+			end
+
+			root.bare = (root.price == nil and root.rarity == nil and root.name == nil and root.id == nil)
+			root.useful = true
+		end
+
+		Market.stats.items = Util.count_keys(Market.roots)
 	end
 
 	function Market.push_by_price()
@@ -2125,6 +2404,7 @@ do
 		end
 
 		Market.stats.fair = known
+		Market.bind_items()
 		Market.join_dirty = false
 	end
 
@@ -2202,6 +2482,7 @@ do
 				source = kind == "gui" and "gui" or "label",
 				key = (kind == "gui" and "gui:" or "label:") .. uid,
 				uid = uid,
+				host = host,
 				text = text,
 				position = position,
 				price = price_in(text) or tail_number,
@@ -2407,8 +2688,18 @@ do
 		local deals_only = Util.on("market_deals")
 		local out = {}
 
+		local items_on = Util.on("market_items")
+
 		if Util.on("market_shop") then
 			for _, entry in next, Market.slots do
+				if not (items_on and entry.item_key ~= nil) then
+					push_candidate(out, entry, origin, studs, min_rank, deals_only)
+				end
+			end
+		end
+
+		if items_on then
+			for _, entry in next, Market.roots do
 				push_candidate(out, entry, origin, studs, min_rank, deals_only)
 			end
 		end
@@ -2523,7 +2814,13 @@ do
 						local node = slot_of(record, "name", "Text")
 
 						restyle(node, font, size)
-						put(node, Util.case(Util.clip(entry.name or "item", 30), case_mode), base, rarity_color)
+						local title = entry.name
+
+						if title == nil and entry.id ~= nil then
+							title = "item " .. tostring(entry.id)
+						end
+
+						put(node, Util.case(Util.clip(title or "item", 30), case_mode), base, rarity_color)
 					else
 						show(record.name, false)
 					end
@@ -2597,6 +2894,10 @@ do
 							parts[#parts + 1] = string.lower(entry.kind)
 						end
 
+						if entry.id ~= nil and entry.rarity == nil and entry.brand == nil and entry.kind == nil then
+							parts[#parts + 1] = "#" .. tostring(entry.id)
+						end
+
 						if entry.seller then
 							parts[#parts + 1] = "@" .. entry.seller
 						end
@@ -2640,10 +2941,23 @@ do
 
 						if node then
 							local distance = math.max(1, (camera.CFrame.Position - entry.position).Magnitude)
-							local radius = math.max(9, math.min(150, 16000 / distance))
 
-							node.Position = Vector2.new(screen.X - radius * 0.5, screen.Y - radius * 0.7)
-							node.Size = Vector2.new(radius, radius * 1.4)
+							if entry.size ~= nil then
+								local per_stud = viewport.Y * 0.5
+									/ math.max(0.01, math.tan(math.rad(camera.FieldOfView * 0.5)))
+									/ distance
+								local width = math.max(8, math.min(340, per_stud * math.max(entry.size.X, entry.size.Z)))
+								local height = math.max(8, math.min(340, per_stud * entry.size.Y))
+
+								node.Position = Vector2.new(screen.X - width * 0.5, screen.Y - height * 0.5)
+								node.Size = Vector2.new(width, height)
+							else
+								local radius = math.max(9, math.min(150, 16000 / distance))
+
+								node.Position = Vector2.new(screen.X - radius * 0.5, screen.Y - radius * 0.7)
+								node.Size = Vector2.new(radius, radius * 1.4)
+							end
+
 							node.Color = rarity_color
 							node.Thickness = 1
 							node.Filled = false
@@ -2724,6 +3038,13 @@ do
 		flag = "market_shop",
 		default = true,
 		tooltip = "clothes racks and stalls replicated into the world",
+	})
+
+	main:toggle({
+		name = "shop items",
+		flag = "market_items",
+		default = true,
+		tooltip = "the real product models on the racks, found by __ShopVisualRoot, box hugs the part",
 	})
 
 	main:toggle({
@@ -2943,12 +3264,111 @@ do
 	})
 
 	probes:button({
+		name = "dump item root",
+		tooltip = "prints attributes, tags, parts and the nearest price signs of two product models",
+		callback = function()
+			local shown = 0
+
+			for model, entry in next, Market.roots do
+				if shown >= 2 then
+					break
+				end
+
+				shown = shown + 1
+
+				local attrs = {}
+
+				pcall(function()
+					for key, value in next, model:GetAttributes() do
+						attrs[#attrs + 1] = key .. "=" .. tostring(value)
+					end
+				end)
+
+				local tags = {}
+
+				pcall(function()
+					for _, tag in next, game:GetService("CollectionService"):GetTags(model) do
+						tags[#tags + 1] = tag
+					end
+				end)
+
+				local parts = 0
+				local classes = {}
+
+				pcall(function()
+					for _, child in next, model:GetChildren() do
+						if #classes < 12 then
+							classes[#classes + 1] = child.ClassName .. " " .. child.Name
+						end
+					end
+
+					for _, child in next, model:GetDescendants() do
+						if child:IsA("BasePart") then
+							parts = parts + 1
+						end
+					end
+				end)
+
+				local pivot, box
+
+				pcall(function()
+					pivot = model:GetPivot().Position
+					box = select(2, model:GetBoundingBox())
+				end)
+
+				print(string.format(
+					"leet.cheats root: %s | parts=%d anchor=%s size=%s pivot=%s box=%s",
+					tostring(entry.key),
+					parts,
+					tostring(entry.position),
+					tostring(entry.size),
+					tostring(pivot),
+					tostring(box)
+				))
+
+				print("leet.cheats root attrs: " .. table.concat(attrs, " "))
+				print("leet.cheats root tags: " .. table.concat(tags, " "))
+				print("leet.cheats root kids: " .. table.concat(classes, ", "))
+
+				local near = {}
+
+				for _, tag in next, Market.tags do
+					if tag.position ~= nil then
+						near[#near + 1] = {
+							away = (tag.position - entry.position).Magnitude,
+							text = tag.text,
+							dup = tag.dup,
+						}
+					end
+				end
+
+				table.sort(near, function(a, b)
+					return a.away < b.away
+				end)
+
+				for index = 1, math.min(3, #near) do
+					print(string.format(
+						"leet.cheats near: %.1f studs | %s dup=%s",
+						near[index].away,
+						tostring(near[index].text),
+						tostring(near[index].dup)
+					))
+				end
+			end
+
+			note(shown > 0 and ("dumped " .. shown .. " item roots") or "no __ShopVisualRoot models found")
+		end,
+	})
+
+	probes:button({
 		name = "report",
 		tooltip = "prints what every source actually returned",
 		callback = function()
 			local filled = 0
 			local pinned = 0
 			local named = 0
+			local item_named = 0
+			local item_known = 0
 
 			for _, slot in next, Market.slots do
 				if slot.bare ~= true then
@@ -2960,6 +3380,16 @@ do
 				end
 			end
 
+			for _, root in next, Market.roots do
+				if root.bare ~= true then
+					item_known = item_known + 1
+				end
+
+				if root.name ~= nil then
+					item_named = item_named + 1
+				end
+			end
+
 			for key in next, Market.pushed do
 				if string.sub(tostring(key), 1, 5) == "slot:" then
 					pinned = pinned + 1
@@ -2967,12 +3397,14 @@ do
 			end
 
 			print(string.format(
-				"leet.cheats report: catalogue=%d numbers=%d names=%d slots=%d filled=%d pushed=%d pinned=%d signs=%d van=%d listings=%d taps=%d bands=%.2f-%.2f",
+				"leet.cheats report: catalogue=%d numbers=%d names=%d slots=%d filled=%d items=%d item_named=%d pushed=%d pinned=%d signs=%d van=%d listings=%d taps=%d bands=%.2f-%.2f",
 				#Catalog.records,
 				Util.count_keys(Catalog.by_number),
 				Util.count_keys(Catalog.by_name),
 				Market.stats.slots,
 				filled,
+				Market.stats.items,
+				item_named,
 				Market.stats.pushed,
 				pinned,
 				Market.stats.tags,
@@ -2984,9 +3416,10 @@ do
 			))
 
 			print(string.format(
-				"leet.cheats gates: esp=%s shop=%s loose=%s signs=%s stalls=%s deals=%s lines=%s min_rarity=%s studs=%s limit=%s drawn=%d",
+				"leet.cheats gates: esp=%s shop=%s items=%s loose=%s signs=%s stalls=%s deals=%s lines=%s min_rarity=%s studs=%s limit=%s drawn=%d",
 				tostring(Util.on("market_esp")),
 				tostring(Util.on("market_shop")),
+				tostring(Util.on("market_items")),
 				tostring(Util.on("market_loose")),
 				tostring(Util.on("market_signs")),
 				tostring(Util.on("market_stalls")),
@@ -3016,9 +3449,11 @@ do
 			end
 
 			print(string.format(
-				"leet.cheats draw: engine=%s named_slots=%d signs=%d fair=%d passed=%d projected=%d records=%d",
+				"leet.cheats draw: engine=%s named_slots=%d items=%d item_named=%d signs=%d fair=%d passed=%d projected=%d records=%d",
 				tostring(Env.drawing),
 				named,
+				Market.stats.items,
+				item_named,
 				Market.stats.tags,
 				Market.stats.fair,
 				#passed,
@@ -3057,6 +3492,30 @@ do
 						tostring(entry.catalogued)
 					))
 				end
+			end
+
+			shown = 0
+
+			for _, entry in next, Market.roots do
+				if shown >= 8 then
+					break
+				end
+
+				shown = shown + 1
+
+				print(string.format(
+					"leet.cheats item: %s | bare=%s name=%s price=%s rarity=%s id=%s shop=%s slot=%s size=%s pos=%s",
+					tostring(entry.key),
+					tostring(entry.bare),
+					tostring(entry.name),
+					tostring(entry.price),
+					tostring(entry.rarity),
+					tostring(entry.id),
+					tostring(entry.shop),
+					tostring(entry.slot_key),
+					tostring(entry.size),
+					tostring(entry.position)
+				))
 			end
 
 			shown = 0
@@ -3116,10 +3575,11 @@ do
 			end
 
 			note(string.format(
-				"slots %d · filled %d · named %d · pushed %d · pinned %d · signs %d",
+				"slots %d · filled %d · named %d · items %d · pushed %d · pinned %d · signs %d",
 				Market.stats.slots,
 				filled,
 				named,
+				Market.stats.items,
 				Market.stats.pushed,
 				pinned,
 				Market.stats.tags
@@ -3142,7 +3602,7 @@ do
 		end
 
 		if Labels.slots then
-			Labels.slots.set("world slots: " .. Market.stats.slots)
+			Labels.slots.set("world slots: " .. Market.stats.slots .. " · items " .. Market.stats.items)
 		end
 
 		if Labels.pushed then
@@ -3164,6 +3624,7 @@ do
 		if Labels.filled then
 			local ready = 0
 			local with_name = 0
+			local item_ready = 0
 
 			for _, slot in next, Market.slots do
 				if slot.bare ~= true then
@@ -3175,7 +3636,15 @@ do
 				end
 			end
 
-			Labels.filled.set("with data: " .. ready .. " · named " .. with_name)
+			for _, root in next, Market.roots do
+				if root.bare ~= true then
+					item_ready = item_ready + 1
+				end
+			end
+
+			Labels.filled.set(
+				"with data: " .. ready .. " · named " .. with_name .. " · items lit " .. item_ready
+			)
 		end
 
 		if Labels.shown then
@@ -3206,11 +3675,12 @@ task.spawn(function()
 	end
 
 	print(string.format(
-		"leet.cheats: price signs %d, slots with data %d of %d, named %d | three_d=%d gui=%d objects=%d labels=%d",
+		"leet.cheats: price signs %d, slots with data %d of %d, named %d, items %d | three_d=%d gui=%d objects=%d labels=%d",
 		signs,
 		lit,
 		Market.stats.slots,
 		named,
+		Market.stats.items,
 		Market.sign_census.three_d,
 		Market.sign_census.gui,
 		Market.sign_census.objects,
