@@ -1,12 +1,12 @@
 local COMMIT = "7e2e709c06e1ab27dd06c08139f4e2f46134756e"
 local REPO_RAW = "https://raw.githubusercontent.com/babay2352/leet.cheats/" .. COMMIT
-local BUILD = "7"
+local BUILD = "8"
 local LIB_BYTES = 147735
 local SIGN_COOLDOWN = 3
 local SIGN_RESCAN = 20
 local JOIN_COOLDOWN = 1
 
-print("leet.cheats: rp build " .. BUILD .. " (pushes bind items by slotRef/visualRef)")
+print("leet.cheats: rp build " .. BUILD .. " (esp redraws every frame, data refreshes on a timer)")
 
 getgenv().LEET_FONT_URL = REPO_RAW .. "/fonts/fs-tahoma-8px.ttf"
 
@@ -26,6 +26,7 @@ local flags = leet.flags
 local players = game:GetService("Players")
 local workspace = game:GetService("Workspace")
 local replicated = game:GetService("ReplicatedStorage")
+local run_service = game:GetService("RunService")
 
 local Env = {}
 
@@ -79,11 +80,9 @@ function Util.count_keys(map)
 end
 
 function Util.project(camera, point)
-	local ok, screen = pcall(function()
-		return camera:WorldToViewportPoint(point)
-	end)
+	local screen = camera:WorldToViewportPoint(point)
 
-	if not ok or screen.Z <= 0 then
+	if screen.Z <= 0 then
 		return
 	end
 
@@ -2368,77 +2367,201 @@ do
 		return index
 	end
 
+	local GRID_CELL = 10
+	local OFFSETS = {}
+
+	for dx = -1, 1 do
+		for dy = -1, 1 do
+			for dz = -1, 1 do
+				OFFSETS[#OFFSETS + 1] = dx
+				OFFSETS[#OFFSETS + 1] = dy
+				OFFSETS[#OFFSETS + 1] = dz
+			end
+		end
+	end
+
+	local function grid_of(source)
+		local cells = {}
+
+		for entry in next, source do
+			local position = entry.position
+
+			if position ~= nil then
+				local key = string.format(
+					"%d|%d|%d",
+					math.floor(position.X / GRID_CELL),
+					math.floor(position.Y / GRID_CELL),
+					math.floor(position.Z / GRID_CELL)
+				)
+				local bucket = cells[key]
+
+				if bucket == nil then
+					bucket = {}
+					cells[key] = bucket
+				end
+
+				bucket[#bucket + 1] = entry
+			end
+		end
+
+		return cells
+	end
+
+	local function fits(entry, mode)
+		if mode == "name_only" then
+			return entry.name ~= nil and entry.price == nil
+		end
+
+		if mode == "named_plain" then
+			return entry.name ~= nil and entry.reseller ~= true
+		end
+
+		if mode == "slot_name" then
+			return entry.name ~= nil and entry.useful == true and entry.reseller ~= true
+		end
+
+		if mode == "slot_price" then
+			return entry.price ~= nil and entry.reseller ~= true
+		end
+
+		return false
+	end
+
+	local function nearest(cells, position, gap, mode)
+		local cx = math.floor(position.X / GRID_CELL)
+		local cy = math.floor(position.Y / GRID_CELL)
+		local cz = math.floor(position.Z / GRID_CELL)
+		local best
+		local best_gap = gap
+		local cursor = 1
+		local span = #OFFSETS
+
+		while cursor <= span do
+			local bucket = cells[string.format(
+				"%d|%d|%d",
+				cx + OFFSETS[cursor],
+				cy + OFFSETS[cursor + 1],
+				cz + OFFSETS[cursor + 2]
+			)]
+
+			if bucket ~= nil then
+				for _, entry in next, bucket do
+					if fits(entry, mode) then
+						local vector = entry.position - position
+						local away = vector.X * vector.X + vector.Y * vector.Y + vector.Z * vector.Z
+
+						if away < best_gap * best_gap then
+							best_gap = math.sqrt(away)
+							best = entry
+						end
+					end
+				end
+			end
+
+			cursor = cursor + 3
+		end
+
+		return best
+	end
+
+	local function mark_dups(cells, source)
+		local square = SIGN_GAP * SIGN_GAP
+
+		for entry in next, source do
+			if entry.name ~= nil and entry.dup ~= true and entry.position ~= nil then
+				local cx = math.floor(entry.position.X / GRID_CELL)
+				local cy = math.floor(entry.position.Y / GRID_CELL)
+				local cz = math.floor(entry.position.Z / GRID_CELL)
+				local cursor = 1
+				local span = #OFFSETS
+
+				while cursor <= span do
+					local bucket = cells[string.format(
+						"%d|%d|%d",
+						cx + OFFSETS[cursor],
+						cy + OFFSETS[cursor + 1],
+						cz + OFFSETS[cursor + 2]
+					)]
+
+					if bucket ~= nil then
+						for _, other in next, bucket do
+							if other ~= entry and other.dup ~= true then
+								if other.name == entry.name and other.price == entry.price then
+									local vector = other.position - entry.position
+
+									if vector.X * vector.X + vector.Y * vector.Y + vector.Z * vector.Z < square then
+										other.dup = true
+									end
+								end
+							end
+						end
+					end
+
+					cursor = cursor + 3
+				end
+			end
+		end
+	end
+
 	function Market.adopt_tags()
 		local found = Market.tags
 		local by_price = Market.push_by_price()
+		local cells = grid_of(found)
+		local by_name = {}
+
+		for _, pushed in next, Market.pushed do
+			if pushed.name ~= nil then
+				local needle = string.lower(pushed.name)
+
+				if by_name[needle] == nil then
+					by_name[needle] = pushed
+				end
+			end
+		end
 
 		for _, entry in next, found do
-			if entry.price ~= nil and entry.name == nil then
-				local gap = SIGN_GAP
-				local donor
+			if entry.position ~= nil then
+				if entry.price ~= nil and entry.name == nil then
+					local donor = nearest(cells, entry.position, SIGN_GAP, "name_only")
 
-				for _, other in next, found do
-					if other ~= entry and other.name ~= nil and other.price == nil then
-						local away = (other.position - entry.position).Magnitude
-
-						if away < gap then
-							gap = away
-							donor = other
-						end
+					if donor ~= nil then
+						entry.name = donor.name
+						entry.rarity = entry.rarity or donor.rarity
+						entry.brand = entry.brand or donor.brand
+						entry.fair = entry.fair or donor.fair
+						entry.reseller = entry.reseller or donor.reseller
+						donor.dup = true
 					end
 				end
 
-				if donor ~= nil then
-					entry.name = donor.name
-					entry.rarity = entry.rarity or donor.rarity
-					entry.brand = entry.brand or donor.brand
-					entry.fair = entry.fair or donor.fair
-					entry.reseller = entry.reseller or donor.reseller
-					donor.dup = true
-				end
-			end
+				if entry.reseller == true then
+					local item = nearest(cells, entry.position, SIGN_GAP, "named_plain")
 
-			if entry.reseller == true then
-				local gap = SIGN_GAP
-				local item
-
-				for _, other in next, found do
-					if other ~= entry and other.name ~= nil and other.reseller ~= true then
-						local away = (other.position - entry.position).Magnitude
-
-						if away < gap then
-							gap = away
-							item = other
-						end
+					if item ~= nil then
+						entry.name = item.name
+						entry.rarity = entry.rarity or item.rarity
+						entry.brand = entry.brand or item.brand
+						entry.fair = entry.fair or item.fair
+						entry.reseller = false
 					end
 				end
 
-				if item ~= nil then
-					entry.name = item.name
-					entry.rarity = entry.rarity or item.rarity
-					entry.brand = entry.brand or item.brand
-					entry.fair = entry.fair or item.fair
-					entry.reseller = false
-				end
-			end
+				if entry.name ~= nil then
+					local record = Catalog.find(nil, entry.name, nil)
 
-			if entry.name ~= nil then
-				local record = Catalog.find(nil, entry.name, nil)
+					if record ~= nil then
+						Catalog.merge(entry, record)
+						entry.catalogued = true
+					end
 
-				if record ~= nil then
-					Catalog.merge(entry, record)
-					entry.catalogued = true
-				end
+					local pushed = by_name[string.lower(entry.name)]
 
-				for _, pushed in next, Market.pushed do
-					if pushed.name ~= nil and string.lower(pushed.name) == string.lower(entry.name) then
+					if pushed ~= nil then
 						entry.price = pushed.price or entry.price
 						entry.rarity = pushed.rarity or entry.rarity
-						entry.brand = entry.brand or pushed.brand
-						entry.fair = entry.fair or pushed.fair
+						entry.brand = pushed.brand or entry.brand
+						entry.fair = pushed.fair or entry.fair
 						entry.source = entry.source == "gui" and "gui+push" or "label+push"
-
-						break
 					end
 				end
 			end
@@ -2460,36 +2583,12 @@ do
 			entry.useful = (entry.price ~= nil or entry.catalogued == true or entry.rarity ~= nil)
 		end
 
-		for _, entry in next, found do
-			if entry.name ~= nil and entry.dup ~= true then
-				for _, other in next, found do
-					if other ~= entry and other.dup ~= true and other.name == entry.name and other.price == entry.price then
-						if (other.position - entry.position).Magnitude < SIGN_GAP then
-							other.dup = true
-						end
-					end
-				end
-			end
-		end
+		mark_dups(cells, found)
 
 		for _, slot in next, Market.slots do
 			if slot.position ~= nil then
-				local named, priced
-				local name_gap, price_gap = SIGN_STUDS, SIGN_STUDS
-
-				for _, entry in next, found do
-					local away = (entry.position - slot.position).Magnitude
-
-					if away < name_gap and entry.name ~= nil and entry.useful == true and entry.reseller ~= true then
-						name_gap = away
-						named = entry
-					end
-
-					if away < price_gap and entry.price ~= nil and entry.reseller ~= true then
-						price_gap = away
-						priced = entry
-					end
-				end
+				local named = nearest(cells, slot.position, SIGN_STUDS, "slot_name")
+				local priced = nearest(cells, slot.position, SIGN_STUDS, "slot_price")
 
 				if named ~= nil and slot.name == nil then
 					slot.name = named.name
@@ -2709,11 +2808,30 @@ do
 	end
 end
 
-local Visual = { records = {} }
+local Visual = {
+	records = {},
+	active = {},
+	budget = 60,
+	step = 0,
+	new_left = 0,
+	frame_cost = 0,
+	sync_cost = 0,
+	drawn = 0,
+	candidates = 0,
+}
 
 Market.Visual = Visual
 
 do
+	local SYNC_STEP = 0.2
+	local MAX_STUDS = 1500
+	local MAX_MARKS = 120
+	local NEW_NODES_PER_SYNC = 60
+	local SNAP_MARKS = 8
+	local SNAP_STUDS = 260
+
+	Visual.sync_step = SYNC_STEP
+
 	local function new_node(class)
 		if not Env.drawing then
 			return
@@ -2726,6 +2844,17 @@ do
 		return ok and node or nil
 	end
 
+	local function style(node, font, size)
+		if node == nil then
+			return
+		end
+
+		node.Font = FONT_IDS[font] or 2
+		node.Size = size
+		node.Center = true
+		node.Outline = true
+	end
+
 	local function slot_of(record, key, class)
 		local node = record[key]
 
@@ -2733,47 +2862,24 @@ do
 			return node
 		end
 
+		if Visual.new_left <= 0 then
+			return
+		end
+
+		Visual.new_left = Visual.new_left - 1
 		node = new_node(class)
+
+		if node == nil then
+			return
+		end
+
 		record[key] = node
 
+		if class == "Text" then
+			style(node, Visual.font, Visual.size)
+		end
+
 		return node
-	end
-
-	local stamps = setmetatable({}, { __mode = "k" })
-
-	local function style(node, font, size)
-		pcall(function()
-			node.Font = FONT_IDS[font] or 2
-			node.Size = size
-			node.Center = true
-			node.Outline = true
-		end)
-	end
-
-	local function restyle(node, font, size)
-		if node == nil then
-			return
-		end
-
-		local stamp = font .. ":" .. tostring(size)
-
-		if stamps[node] == stamp then
-			return
-		end
-
-		stamps[node] = stamp
-		style(node, font, size)
-	end
-
-	local function put(node, text, position, color)
-		if node == nil then
-			return
-		end
-
-		node.Text = text
-		node.Position = position
-		node.Color = color
-		node.Visible = #text > 0
 	end
 
 	local function show(node, visible)
@@ -2791,25 +2897,53 @@ do
 	end
 
 	local function free(record)
-		for _, node in next, record do
-			kill(node)
-		end
+		kill(record.name)
+		kill(record.price)
+		kill(record.fair)
+		kill(record.tags)
+		kill(record.box)
+		kill(record.snap)
 
 		table.clear(record)
 	end
 
+	local function blank(record)
+		show(record.name, false)
+		show(record.price, false)
+		show(record.fair, false)
+		show(record.tags, false)
+		show(record.box, false)
+		show(record.snap, false)
+
+		record.lines = nil
+		record.used = 0
+		record.box_on = false
+		record.snap_on = false
+		record.shown = nil
+	end
+
 	Visual.free = free
+	Visual.blank = blank
 
 	local function rank_of(entry)
 		return Rarity.order[entry.rarity] or 0
 	end
 
 	local function push_candidate(out, entry, origin, limit_studs, min_rank, deals_only)
-		if entry.position == nil or entry.bare == true then
+		local position = entry.position
+
+		if position == nil or entry.bare == true then
 			return
 		end
 
-		if (entry.position - origin).Magnitude > limit_studs then
+		if entry.name == nil and entry.price == nil then
+			return
+		end
+
+		local vector = position - origin
+		local away = math.sqrt(vector.X * vector.X + vector.Y * vector.Y + vector.Z * vector.Z)
+
+		if away > limit_studs then
 			return
 		end
 
@@ -2823,6 +2957,7 @@ do
 			return
 		end
 
+		entry.dist = away
 		out[#out + 1] = entry
 	end
 
@@ -2834,7 +2969,7 @@ do
 		end
 
 		local origin = camera.CFrame.Position
-		local studs = Util.number("market_studs", 900)
+		local studs = math.min(Util.number("market_studs", 900), MAX_STUDS)
 		local min_rank = Rarity.order[Util.pick("market_rarity", "Common")] or 1
 		local deals_only = Util.on("market_deals")
 		local out = {}
@@ -2902,24 +3037,398 @@ do
 			end
 		end
 
-		table.sort(out, function(a, b)
+		local clean = {}
+		local spots = {}
+
+		for _, entry in next, out do
+			local position = entry.position
+			local spot = string.format(
+				"%.0f|%.0f|%s|%s|%d",
+				position.X * 0.5,
+				position.Z * 0.5,
+				tostring(entry.name),
+				tostring(entry.price),
+				entry.offset or 0
+			)
+
+			if spots[spot] == nil then
+				spots[spot] = true
+				clean[#clean + 1] = entry
+			end
+		end
+
+		table.sort(clean, function(a, b)
 			local ra, rb = rank_of(a), rank_of(b)
 
 			if ra ~= rb then
 				return ra > rb
 			end
 
-			return (a.price or 0) > (b.price or 0)
+			return (a.dist or 0) < (b.dist or 0)
 		end)
 
 		local capped = {}
-		local limit = Util.number("market_limit", 80)
+		local limit = math.min(Util.number("market_limit", 60), MAX_MARKS)
 
-		for index = 1, math.min(#out, limit) do
-			capped[index] = out[index]
+		for index = 1, math.min(#clean, limit) do
+			capped[index] = clean[index]
 		end
 
+		Visual.candidates = #clean
+
 		return capped
+	end
+
+	local function add_line(lines, used, node, dy)
+		if node == nil then
+			return used
+		end
+
+		local line = lines[used + 1]
+
+		if line == nil then
+			line = {}
+			lines[used + 1] = line
+		end
+
+		line.node = node
+		line.dy = dy
+
+		return used + 1
+	end
+
+	local function blank_lines(record)
+		local lines = record.lines
+		local used = record.used or 0
+
+		if lines ~= nil then
+			for index = 1, used do
+				lines[index].node.Visible = false
+			end
+		end
+
+		show(record.box, false)
+		show(record.snap, false)
+	end
+
+	local function compose(record, entry, cfg)
+		local lines = record.lines
+
+		if lines == nil then
+			lines = {}
+			record.lines = lines
+		end
+
+		local size = cfg.size
+		local top = -size * 1.2 - (entry.offset or 0) * (size * 4.6)
+		local color = (entry.rarity and Rarity.colors[entry.rarity]) or cfg.fallback
+		local used = 0
+
+		if cfg.names and (entry.name ~= nil or entry.id ~= nil) then
+			local node = slot_of(record, "name", "Text")
+
+			if node ~= nil then
+				style(node, cfg.font, size)
+				node.Text = Util.case(Util.clip(entry.name or ("item " .. tostring(entry.id)), 30), cfg.case_mode)
+				node.Color = color
+				used = add_line(lines, used, node, top)
+			end
+		end
+
+		if cfg.price and entry.price ~= nil then
+			local node = slot_of(record, "price", "Text")
+
+			if node ~= nil then
+				local tone = cfg.price_color
+
+				if entry.fair ~= nil and entry.fair > 0 then
+					if entry.price < entry.fair then
+						tone = Color3.fromRGB(80, 220, 120)
+					elseif entry.price > entry.fair * 1.15 then
+						tone = Color3.fromRGB(240, 90, 90)
+					end
+				end
+
+				node.Text = Util.money(entry.price)
+				node.Color = tone
+				style(node, cfg.font, size)
+				used = add_line(lines, used, node, top + size * 1.15)
+			end
+		end
+
+		if cfg.fair and entry.fair ~= nil then
+			local node = slot_of(record, "fair", "Text")
+
+			if node ~= nil then
+				local text = "fair " .. Util.money(entry.fair)
+
+				if entry.price ~= nil then
+					text = text .. string.format("  %+0.0f%%", (entry.price / entry.fair - 1) * 100)
+				else
+					text = text .. string.format(
+						"  ~%s-%s",
+						Util.money(entry.fair * cfg.low),
+						Util.money(entry.fair * cfg.high)
+					)
+				end
+
+				if entry.retired then
+					text = text .. "  retired"
+				end
+
+				node.Text = text
+				node.Color = Color3.fromRGB(190, 190, 200)
+				style(node, cfg.font, size)
+				used = add_line(lines, used, node, top + size * 2.3)
+			end
+		end
+
+		if cfg.tags then
+			local parts = {}
+
+			if entry.rarity then
+				parts[#parts + 1] = Rarity.labels[entry.rarity] or string.lower(entry.rarity)
+			end
+
+			if entry.brand then
+				parts[#parts + 1] = string.lower(entry.brand)
+			end
+
+			if entry.kind then
+				parts[#parts + 1] = string.lower(entry.kind)
+			end
+
+			if entry.id ~= nil and entry.rarity == nil and entry.brand == nil and entry.kind == nil then
+				parts[#parts + 1] = "#" .. tostring(entry.id)
+			end
+
+			if entry.seller then
+				parts[#parts + 1] = "@" .. entry.seller
+			end
+
+			if entry.auction_bids then
+				parts[#parts + 1] = "auction " .. tostring(entry.auction_bids)
+			end
+
+			if entry.boosted then
+				parts[#parts + 1] = "boosted"
+			end
+
+			if entry.mystery then
+				parts[#parts + 1] = "mystery"
+			end
+
+			if entry.source == "van" then
+				parts[#parts + 1] = "black market"
+			end
+
+			if cfg.dist then
+				parts[#parts + 1] = string.format("%.0f m", entry.dist or 0)
+			end
+
+			if #parts > 0 then
+				local node = slot_of(record, "tags", "Text")
+
+				if node ~= nil then
+					node.Text = Util.case(Util.clip(table.concat(parts, " · "), 54), cfg.case_mode)
+					node.Color = Color3.fromRGB(150, 150, 165)
+					style(node, cfg.font, math.max(8, size - 2))
+					used = add_line(lines, used, node, top + size * 3.4)
+				end
+			end
+		end
+
+		local pool = { record.name, record.price, record.fair, record.tags }
+
+		for pool_index = 1, 4 do
+			local node = pool[pool_index]
+
+			if node ~= nil then
+				local wanted = false
+
+				for used_index = 1, used do
+					if lines[used_index].node == node then
+						wanted = true
+						break
+					end
+				end
+
+				if wanted ~= true then
+					node.Visible = false
+				end
+			end
+		end
+		record.box_on = false
+
+		if cfg.box then
+			local node = slot_of(record, "box", "Square")
+
+			if node ~= nil then
+				node.Color = color
+				node.Thickness = 1
+				node.Filled = false
+				node.Transparency = 0.35
+				record.box_on = true
+				record.box_stud = entry.size ~= nil
+				record.box_size = entry.size
+			else
+				show(record.box, false)
+			end
+		else
+			show(record.box, false)
+		end
+
+		record.snap_on = false
+
+		if cfg.snap and entry.snap_on == true then
+			local node = slot_of(record, "snap", "Line")
+
+			if node ~= nil then
+				node.Color = color
+				node.Thickness = 1
+				node.Transparency = 0.6
+				record.snap_on = true
+			else
+				show(record.snap, false)
+			end
+		else
+			show(record.snap, false)
+		end
+
+		record.entry = entry
+		record.used = used
+	end
+
+	function Visual.sync()
+		if not Env.drawing then
+			return
+		end
+
+		local camera = workspace.CurrentCamera
+
+		if camera == nil then
+			return
+		end
+
+		local font = Util.pick("market_font", "SourceSans")
+		local size = math.max(8, Util.number("market_size", 14))
+
+		Visual.font = font
+		Visual.size = size
+
+		local ceiling = math.min(Util.number("market_limit", 60), MAX_MARKS)
+		local budget = Visual.budget
+		local slow = Visual.frame_cost > 3 or Visual.sync_cost > 25
+		local comfy = Visual.frame_cost < 1.2 and Visual.sync_cost < 10
+
+		if Visual.step == 0 then
+			budget = ceiling
+		elseif slow then
+			budget = math.max(12, math.floor(budget * 0.7))
+		elseif comfy and budget < ceiling then
+			budget = math.min(ceiling, budget + 3)
+		end
+
+		if budget > ceiling then
+			budget = ceiling
+		end
+
+		Visual.budget = budget
+
+		local all = Visual.entries()
+		local cfg = {
+			font = font,
+			case_mode = Util.pick("market_case", "none"),
+			fallback = Util.color("market_color_name", Color3.fromRGB(235, 235, 240)),
+			price_color = Util.color("market_color_price", Color3.new(1, 1, 1)),
+			names = Util.on("market_names"),
+			price = Util.on("market_price"),
+			fair = Util.on("market_fair"),
+			tags = Util.on("market_tags"),
+			dist = Util.on("market_dist"),
+			box = Util.on("market_box"),
+			snap = Util.on("market_snap"),
+			low = Catalog.bands.low,
+			high = Catalog.bands.high,
+			size = size,
+		}
+
+		for index = 1, #all do
+			all[index].snap_on = false
+		end
+
+		if cfg.snap then
+			local picked = 0
+
+			while picked < SNAP_MARKS do
+				local best
+				local best_dist = SNAP_STUDS + 1
+
+				for index = 1, #all do
+					local entry = all[index]
+					local away = entry.dist or 0
+
+					if entry.snap_on ~= true and away <= SNAP_STUDS and away < best_dist then
+						best = entry
+						best_dist = away
+					end
+				end
+
+				if best == nil then
+					break
+				end
+
+				best.snap_on = true
+				picked = picked + 1
+			end
+		end
+
+		Visual.new_left = NEW_NODES_PER_SYNC
+
+		local keep = {}
+		local active = {}
+		local limit = math.min(#all, budget)
+
+		for index = 1, limit do
+			local entry = all[index]
+			local key = entry.key
+
+			if key ~= nil then
+				keep[key] = true
+
+				local record = Visual.records[key]
+
+				if record == nil then
+					record = { key = key }
+					Visual.records[key] = record
+				end
+
+				compose(record, entry, cfg)
+				record.shown = true
+				active[#active + 1] = record
+			end
+		end
+
+		for index = limit + 1, #all do
+			local key = all[index].key
+
+			if key ~= nil then
+				keep[key] = true
+			end
+		end
+
+		for key, record in next, Visual.records do
+			if keep[key] == nil then
+				free(record)
+				Visual.records[key] = nil
+			elseif record.shown ~= true then
+				blank(record)
+			else
+				record.shown = nil
+			end
+		end
+
+		Visual.active = active
 	end
 
 	function Visual.frame()
@@ -2933,216 +3442,128 @@ do
 			return
 		end
 
+		local now = os.clock()
+
+		if Visual.pulse ~= nil then
+			local delta = (now - Visual.pulse) * 1000
+
+			if delta > 120 then
+				delta = 120
+			end
+
+			Visual.step = Visual.step * 0.85 + delta * 0.15
+		end
+
+		Visual.pulse = now
+
+		local active = Visual.active
 		local viewport = camera.ViewportSize
+		local right = viewport.X + 80
+		local bottom = viewport.Y + 80
 		local center = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
-		local font = Util.pick("market_font", "SourceSans")
-		local size = Util.number("market_size", 14)
-		local case_mode = Util.pick("market_case", "none")
-		local fallback = Util.color("market_color_name", Color3.fromRGB(235, 235, 240))
-		local bands = Catalog.bands
-		local keep = {}
+		local scene = camera.CFrame
+		local origin = scene.Position
+		local forward = scene.LookVector
+		local focal = viewport.Y * 0.5 / math.max(0.01, math.tan(math.rad(camera.FieldOfView * 0.5)))
+		local drawn = 0
 
-		for _, entry in next, Visual.entries() do
-			local key = entry.key
+		for index = 1, #active do
+			local record = active[index]
+			local entry = record.entry
+			local position = nil
 
-			if key then
-				local screen = Util.project(camera, entry.position)
+			if entry ~= nil then
+				position = entry.position
+			end
 
-				if screen then
-					local record = Visual.records[key]
+			if position == nil then
+				blank_lines(record)
+			else
+				local vector = position - origin
+				local depth = vector.X * forward.X + vector.Y * forward.Y + vector.Z * forward.Z
 
-					if record == nil then
-						record = {}
-						Visual.records[key] = record
-					end
+				if depth > 0.5 then
+					local screen = camera:WorldToViewportPoint(position)
+					local x = screen.X
+					local y = screen.Y
 
-					keep[key] = true
+					if x > -80 and x < right and y > -80 and y < bottom then
+						local lines = record.lines
 
-					local base = Vector2.new(screen.X, screen.Y - size * 1.2 - (entry.offset or 0) * (size * 4.6))
-					local rarity_color = (entry.rarity and Rarity.colors[entry.rarity]) or fallback
-
-					if Util.on("market_names") then
-						local node = slot_of(record, "name", "Text")
-
-						restyle(node, font, size)
-						local title = entry.name
-
-						if title == nil and entry.id ~= nil then
-							title = "item " .. tostring(entry.id)
-						end
-
-						put(node, Util.case(Util.clip(title or "item", 30), case_mode), base, rarity_color)
-					else
-						show(record.name, false)
-					end
-
-					if Util.on("market_price") then
-						local node = slot_of(record, "price", "Text")
-						local color = Util.color("market_color_price", Color3.new(1, 1, 1))
-						local text = "price hidden"
-
-						restyle(node, font, size)
-
-						if entry.price then
-							text = Util.money(entry.price)
-
-							if entry.fair and entry.fair > 0 then
-								if entry.price < entry.fair then
-									color = Color3.fromRGB(80, 220, 120)
-								elseif entry.price > entry.fair * 1.15 then
-									color = Color3.fromRGB(240, 90, 90)
-								end
+						if lines ~= nil then
+							for line_index = 1, record.used or 0 do
+								local line = lines[line_index]
+								line.node.Position = Vector2.new(x, y + line.dy)
+								line.node.Visible = true
 							end
-						else
-							color = Color3.fromRGB(165, 165, 178)
 						end
 
-						put(node, text, base + Vector2.new(0, size * 1.15), color)
-					else
-						show(record.price, false)
-					end
+						if record.box_on == true then
+							local node = record.box
+							local distance = depth
 
-					if Util.on("market_fair") and entry.fair then
-						local node = slot_of(record, "fair", "Text")
-						local text = "fair " .. Util.money(entry.fair)
+							if distance < 1 then
+								distance = 1
+							end
 
-						restyle(node, font, size)
+							if record.box_stud == true then
+								local size = record.box_size
+								local wide = focal * math.max(size.X, size.Z) / distance
 
-						if entry.price then
-							text = text .. string.format("  %+0.0f%%", (entry.price / entry.fair - 1) * 100)
-						else
-							text = text .. string.format(
-								"  ~%s-%s",
-								Util.money(entry.fair * bands.low),
-								Util.money(entry.fair * bands.high)
-							)
-						end
+								if wide < 8 then
+									wide = 8
+								elseif wide > 340 then
+									wide = 340
+								end
 
-						if entry.retired then
-							text = text .. "  retired"
-						end
+								local tall = focal * size.Y / distance
 
-						put(node, text, base + Vector2.new(0, size * 2.3), Color3.fromRGB(190, 190, 200))
-					else
-						show(record.fair, false)
-					end
+								if tall < 8 then
+									tall = 8
+								elseif tall > 340 then
+									tall = 340
+								end
 
-					if Util.on("market_tags") then
-						local node = slot_of(record, "tags", "Text")
-						local parts = {}
-
-						restyle(node, font, math.max(8, size - 2))
-
-						if entry.rarity then
-							parts[#parts + 1] = Rarity.labels[entry.rarity] or string.lower(entry.rarity)
-						end
-
-						if entry.brand then
-							parts[#parts + 1] = string.lower(entry.brand)
-						end
-
-						if entry.kind then
-							parts[#parts + 1] = string.lower(entry.kind)
-						end
-
-						if entry.id ~= nil and entry.rarity == nil and entry.brand == nil and entry.kind == nil then
-							parts[#parts + 1] = "#" .. tostring(entry.id)
-						end
-
-						if entry.seller then
-							parts[#parts + 1] = "@" .. entry.seller
-						end
-
-						if entry.auction_bids then
-							parts[#parts + 1] = "auction " .. tostring(entry.auction_bids)
-						end
-
-						if entry.boosted then
-							parts[#parts + 1] = "boosted"
-						end
-
-						if entry.mystery then
-							parts[#parts + 1] = "mystery"
-						end
-
-						if entry.source == "van" then
-							parts[#parts + 1] = "black market"
-						end
-
-						if Util.on("market_dist") then
-							parts[#parts + 1] = string.format("%.0f m", (camera.CFrame.Position - entry.position).Magnitude)
-						end
-
-						if #parts == 0 then
-							parts[#parts + 1] = tostring(entry.source)
-						end
-
-						put(
-							node,
-							Util.case(Util.clip(table.concat(parts, " · "), 54), case_mode),
-							base + Vector2.new(0, size * 3.4),
-							Color3.fromRGB(150, 150, 165)
-						)
-					else
-						show(record.tags, false)
-					end
-
-					if Util.on("market_box") then
-						local node = slot_of(record, "box", "Square")
-
-						if node then
-							local distance = math.max(1, (camera.CFrame.Position - entry.position).Magnitude)
-
-							if entry.size ~= nil then
-								local per_stud = viewport.Y * 0.5
-									/ math.max(0.01, math.tan(math.rad(camera.FieldOfView * 0.5)))
-									/ distance
-								local width = math.max(8, math.min(340, per_stud * math.max(entry.size.X, entry.size.Z)))
-								local height = math.max(8, math.min(340, per_stud * entry.size.Y))
-
-								node.Position = Vector2.new(screen.X - width * 0.5, screen.Y - height * 0.5)
-								node.Size = Vector2.new(width, height)
+								node.Position = Vector2.new(x - wide * 0.5, y - tall * 0.5)
+								node.Size = Vector2.new(wide, tall)
 							else
-								local radius = math.max(9, math.min(150, 16000 / distance))
+								local radius = 16000 / distance
 
-								node.Position = Vector2.new(screen.X - radius * 0.5, screen.Y - radius * 0.7)
+								if radius < 9 then
+									radius = 9
+								elseif radius > 150 then
+									radius = 150
+								end
+
+								node.Position = Vector2.new(x - radius * 0.5, y - radius * 0.7)
 								node.Size = Vector2.new(radius, radius * 1.4)
 							end
 
-							node.Color = rarity_color
-							node.Thickness = 1
-							node.Filled = false
-							node.Transparency = 0.35
 							node.Visible = true
+						else
+							show(record.box, false)
 						end
-					else
-						show(record.box, false)
-					end
 
-					if Util.on("market_snap") then
-						local node = slot_of(record, "snap", "Line")
-
-						if node then
+						if record.snap_on == true then
+							local node = record.snap
 							node.From = center
-							node.To = Vector2.new(screen.X, screen.Y)
-							node.Color = rarity_color
-							node.Thickness = 1
-							node.Transparency = 0.6
+							node.To = Vector2.new(x, y)
 							node.Visible = true
+						else
+							show(record.snap, false)
 						end
+
+						drawn = drawn + 1
 					else
-						show(record.snap, false)
+						blank_lines(record)
 					end
+				else
+					blank_lines(record)
 				end
 			end
 		end
 
-		for key, record in next, Visual.records do
-			if keep[key] == nil then
-				free(record)
-				Visual.records[key] = nil
-			end
-		end
+		Visual.drawn = drawn
 	end
 
 	function Visual.teardown()
@@ -3151,6 +3572,10 @@ do
 		end
 
 		Visual.records = {}
+		Visual.active = {}
+		Visual.drawn = 0
+		Visual.pulse = nil
+		Visual.step = 0
 	end
 end
 
@@ -3307,19 +3732,21 @@ do
 	filters:slider({
 		name = "max studs",
 		flag = "market_studs",
-		default = 900,
+		default = 600,
 		min = 50,
 		max = 4000,
 		interval = 50,
+		tooltip = "hard ceiling is 1500 studs, anything wider only eats frames",
 	})
 
 	filters:slider({
 		name = "max marks",
 		flag = "market_limit",
-		default = 80,
+		default = 60,
 		min = 5,
 		max = 300,
 		interval = 5,
+		tooltip = "pool ceiling, autoscale trims it by itself when frames go slow",
 	})
 
 	filters:slider({
@@ -3614,6 +4041,18 @@ do
 				Util.count_keys(Visual.records)
 			))
 
+			print(string.format(
+				"leet.cheats perf: frame=%.2f ms sync=%.1f ms period=%.1f ms budget=%d active=%d drawn=%d candidates=%d records=%d",
+				Visual.frame_cost or 0,
+				Visual.sync_cost or 0,
+				Visual.step or 0,
+				Visual.budget or 0,
+				#Visual.active,
+				Visual.drawn or 0,
+				Visual.candidates or 0,
+				Util.count_keys(Visual.records)
+			))
+
 			for tag in next, Catalog.loaded do
 				print("leet.cheats config: " .. tag)
 			end
@@ -3801,7 +4240,13 @@ do
 		end
 
 		if Labels.shown then
-			Labels.shown.set("drawn now: " .. Util.count_keys(Visual.records))
+			Labels.shown.set(string.format(
+				"drawn %d · pool %d · budget %d · %.1f ms/frame",
+				Visual.drawn or 0,
+				#Visual.active,
+				Visual.budget or 0,
+				Visual.step or 0
+			))
 		end
 	end
 end
@@ -3858,9 +4303,10 @@ task.spawn(function()
 	local last = os.clock()
 	local last_sign = os.clock()
 	local last_join = 0
+	local last_draw = 0
 
 	while not leet.dead do
-		task.wait(0.25)
+		task.wait(0.1)
 
 		if os.clock() - last >= 1 / math.max(1, Util.number("market_hz", 1)) then
 			last = os.clock()
@@ -3888,7 +4334,14 @@ task.spawn(function()
 		end
 
 		if Util.on("market_esp") then
-			pcall(Visual.frame)
+			if os.clock() - last_draw >= Visual.sync_step then
+				last_draw = os.clock()
+
+				local began = os.clock()
+
+				pcall(Visual.sync)
+				Visual.sync_cost = Visual.sync_cost * 0.7 + (os.clock() - began) * 1000 * 0.3
+			end
 		elseif next(Visual.records) ~= nil then
 			Visual.teardown()
 		end
@@ -3896,6 +4349,22 @@ task.spawn(function()
 		if Market.paint then
 			pcall(Market.paint)
 		end
+	end
+end)
+
+local paint_link = run_service.RenderStepped:Connect(function()
+	if leet.dead == true then
+		paint_link:Disconnect()
+		Visual.teardown()
+
+		return
+	end
+
+	if Util.on("market_esp") then
+		local began = os.clock()
+
+		pcall(Visual.frame)
+		Visual.frame_cost = Visual.frame_cost * 0.85 + (os.clock() - began) * 1000 * 0.15
 	end
 end)
 
